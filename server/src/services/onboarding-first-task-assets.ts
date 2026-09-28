@@ -5,6 +5,7 @@ import {
   askUserQuestionsQuestionOptionSchema,
   type AskUserQuestionsPayload,
 } from "@paperclipai/shared";
+import { appendAntiEarlyStopInstructions } from "./anti-early-stop-instructions.js";
 
 // Everything the onboarding first agent is told lives as plain markdown under
 // server/src/onboarding-assets/first-task/ so the board can edit the wording
@@ -145,5 +146,5 @@ export async function buildOnboardingFirstAgentInstructionsBundle(
   placeholders: OnboardingFirstTaskPlaceholders,
 ): Promise<{ files: Record<string, string>; entryFile: string }> {
   const persona = await renderChiefOfStaffPersona(placeholders);
-  return { files: { "AGENTS.md": persona }, entryFile: "AGENTS.md" };
+  return { files: { "AGENTS.md": appendAntiEarlyStopInstructions(persona) }, entryFile: "AGENTS.md" };
 }
