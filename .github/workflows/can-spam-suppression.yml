@@ -38,7 +38,7 @@ jobs:
           node-version: "22"
 
       - name: Run the suppression-list end-to-end test
-        # 77 checks. Covers the preflight's three load-bearing properties:
+        # 89 checks. Covers the preflight's three load-bearing properties:
         #   - reachable from the same origin that serves {OPT_OUT_URL}
         #   - an opt-out recorded mid-batch blocks the unsent remainder
         #   - fails closed on an unreadable store or an unparseable recipient
