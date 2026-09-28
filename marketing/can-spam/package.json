@@ -5,7 +5,7 @@
   "description": "CAN-SPAM opt-out endpoint + global suppression list for K-247 Day-1 send",
   "main": "suppression.cjs",
   "scripts": {
-    "test": "node test-e2e.cjs",
+    "test": "node tests/e2e.test.cjs",
     "start": "node server.cjs",
     "check": "node check-suppression.cjs"
   }

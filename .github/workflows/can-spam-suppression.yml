@@ -43,7 +43,7 @@ jobs:
         #   - an opt-out recorded mid-batch blocks the unsent remainder
         #   - fails closed on an unreadable store or an unparseable recipient
         # The test uses an isolated temp store, so it never touches a real list.
-        run: node marketing/can-spam/test-e2e.cjs
+        run: node marketing/can-spam/tests/e2e.test.cjs
 
       - name: Prove the send gate fails closed when the store is absent
         # A store that does not exist cannot certify anyone. The preflight must

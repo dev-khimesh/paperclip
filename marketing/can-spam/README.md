@@ -34,7 +34,7 @@ This is the machinery that makes the `{OPT_OUT_URL}` in the K-247 Day-1 CAN-SPAM
 reply body against the 16 CFR 316.5 keywords; `recordStopReply()` writes the sender address into
 the same global store the preflight reads, preserving idempotency and the original
 `suppressedAt`. A STOP and a web opt-out are honoured identically and immediately. Proven by
-`test-e2e.cjs` §15.
+`tests/e2e.test.cjs` §15.
 
 **What is missing:** the *receiving* half. There is no inbound mail path in this repository
 (verified: no inbound-email route, webhook, or IMAP/POP poller anywhere in `server/src`), and
@@ -70,7 +70,7 @@ A **single** store, shared across every campaign and every list the company hold
 | `preflight.cjs` | **The send gate.** `preflight()` (fail-closed dispatch check), `recordStopReply()`, `parseStopReply()`, append-only audit log. |
 | `server.cjs` | HTTP origin: landing page (`GET /opt-out`), JSON API (`POST /opt-out`), **send preflight (`POST /send-preflight`)**, **STOP recording (`POST /stop`)**, read-only list view (`GET /suppression-list`), health (`GET /health`). Zero dependencies (node:http). |
 | `check-suppression.cjs` | CLI the send agent calls: `preflight`, `stop`, `check`, `batch`, `list`. |
-| `test-e2e.cjs` | End-to-end test, **89 checks**. Real HTTP, real on-disk store, isolated temp dir. |
+| `tests/e2e.test.cjs` | End-to-end test, **89 checks**. Real HTTP, real on-disk store, isolated temp dir. |
 | `DECISION-day1-send-path.md` | Which component performs the Day-1 send, and why. (K-20062 AC1.) |
 | `suppression-list.json` | The live store. **Not committed** — it holds real opted-out addresses (personal data). `CAN_SPAM_STORE` points at it. |
 | `send-audit.log` | Append-only record of every preflight and every STOP. **Not committed** (same reason). `CAN_SPAM_AUDIT_LOG` points at it. |
@@ -127,7 +127,7 @@ problem to hear about.
   dropped.
 - This is a deliberate difference from `filterImport`, which *does* silently skip invalid
   addresses. That is correct for an import filter and wrong for a send gate, so the two are
-  separate functions over the same store. `test-e2e.cjs` §12 asserts they agree on every shared
+  separate functions over the same store. `tests/e2e.test.cjs` §12 asserts they agree on every shared
   decision.
 
 ### 3d. Single-address, init, and list utilities
@@ -148,7 +148,7 @@ replaced by an empty one would un-suppress every opted-out address in the compan
 If the store cannot be written, `POST /opt-out` returns **503** and the landing page does **not**
 render "removed from all lists". Telling a recipient they have been removed and then emailing them
 again is the worst outcome this control has available, so a write failure is surfaced, not
-swallowed. Proven by `test-e2e.cjs` §18.
+swallowed. Proven by `tests/e2e.test.cjs` §18.
 
 ### 3f. Process requirement for the Day-1 send agent
 
@@ -170,7 +170,7 @@ acceptance is tracked as a follow-up in the decision doc.
 
 ```bash
 # end-to-end test (89 checks; isolated temp store, never touches the live list)
-node marketing/can-spam/test-e2e.cjs
+node marketing/can-spam/tests/e2e.test.cjs
 
 # start the origin (also the {OPT_OUT_URL} target)
 node marketing/can-spam/server.cjs
@@ -186,7 +186,7 @@ honoured), `CAN_SPAM_AUDIT_LOG` (audit log path).
 
 ## 4a. Test evidence (2026-09-28)
 
-`node marketing/can-spam/test-e2e.cjs` → **89 passed, 0 failed**, in CI on every PR touching
+`node marketing/can-spam/tests/e2e.test.cjs` → **89 passed, 0 failed**, in CI on every PR touching
 `marketing/can-spam/` (`.github/workflows/can-spam-suppression.yml`). Real HTTP, real on-disk
 store, isolated temp dir. The checks that close K-20062:
 
@@ -220,7 +220,7 @@ The machinery is live-tested but **not yet fronted by a real domain**, because:
 3. Set the footer entity lines from the P1 company record.
 4. Publish `stop@<verified-domain>` as the reply-to / reply-"STOP" mailbox — **only after the
    three unblock conditions in §1a**, and wire it to `POST /stop`.
-5. Re-run `test-e2e.cjs` against the live store to confirm wiring.
+5. Re-run `tests/e2e.test.cjs` against the live store to confirm wiring.
 
 **No emails have been sent. K-19858 remains frozen.** This issue makes the opt-out *operable*
 and puts a real gate in front of the dispatch; it does not authorise a send.

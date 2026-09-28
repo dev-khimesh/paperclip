@@ -22,15 +22,15 @@
  *  11. the preflight and filterImport agree on the same object/reason
  *  12. a STOP reply is recorded into the same store and blocks the next send
  *
- * Run: node marketing/can-spam/test-e2e.cjs
+ * Run: node marketing/can-spam/tests/e2e.test.cjs
  */
 
 const http = require('node:http');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { SuppressionList } = require('./suppression.cjs');
-const { preflight, recordStopReply, parseStopReply, EXIT } = require('./preflight.cjs');
+const { SuppressionList } = require('../suppression.cjs');
+const { preflight, recordStopReply, parseStopReply, EXIT } = require('../preflight.cjs');
 
 const PORT = 8799;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -82,7 +82,7 @@ async function main() {
   process.env.CAN_SPAM_AUDIT_LOG = path.join(tmpDir, 'send-audit.log');
 
   // Require server AFTER setting the env var so it picks up the temp store.
-  const { server } = require('./server.cjs');
+  const { server } = require('../server.cjs');
   await new Promise((resolve) => server.listen(PORT, '127.0.0.1', resolve));
 
   const t = (email) => `test+${email.replace(/[^a-z0-9]/gi, '')}@example.com`;
