@@ -58,6 +58,16 @@ describe("anti-early-stop instructions", () => {
     expect(ANTI_EARLY_STOP_INSTRUCTIONS).toContain("plan_only");
     expect(ANTI_EARLY_STOP_INSTRUCTIONS).toContain("bounded number of times");
   });
+
+  it("does not promise a re-run the runtime will not deliver", () => {
+    // `classifyRunLiveness` only returns `plan_only` when the described future work
+    // is judged runnable; otherwise it returns `needs_followup`, and
+    // `ACTIONABLE_LIVENESS_STATES` is {plan_only, empty_response} — so
+    // `needs_followup` gets no continuation. Claiming an unconditional re-run is a
+    // control the prompt believes exists and the runtime does not provide.
+    expect(ANTI_EARLY_STOP_INSTRUCTIONS).toContain("needs_followup");
+    expect(ANTI_EARLY_STOP_INSTRUCTIONS).not.toMatch(/recorded as `plan_only` and re-runs you a bounded number of times\.\s*$/m);
+  });
 });
 
 describe("built-in instruction bundles carry the block", () => {

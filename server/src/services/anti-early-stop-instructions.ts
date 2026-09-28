@@ -16,10 +16,13 @@
  * always lands last in the entry file, never drifts between templates, and is
  * picked up automatically by templates added later.
  *
- * The runtime half of this guard already exists and is what makes the promise in
- * the text honest: `classifyRunLiveness` reports a text-only summary as
- * `plan_only` rather than completion, and `decideRunLivenessContinuation` re-runs
- * the agent a bounded number of times (`DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS`).
+ * The runtime half of this guard already exists and is what makes the prompt honest:
+ * `classifyRunLiveness` (`services/run-liveness.ts:356`) records a text-only summary as
+ * `plan_only` when the described future work is judged runnable, and `needs_followup`
+ * otherwise. `decideRunLivenessContinuation` re-runs the agent only for
+ * `ACTIONABLE_LIVENESS_STATES` — `plan_only` and `empty_response` — up to
+ * `DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS` times. The block therefore states the
+ * conditional rather than promising a re-run that `needs_followup` will not deliver.
  * See `services/recovery/run-liveness-continuations.ts`.
  */
 
@@ -38,7 +41,7 @@ export const ANTI_EARLY_STOP_INSTRUCTIONS = [
   "- A turn that ends with only text is a report, not completion.",
   "- Put a status note in the *same* message as your next tool call. If a message announces what you will do next, that message must also make the call.",
   "- Delete any closing offer to continue \"unless you'd prefer otherwise\", any list of decisions for the user, and any \"this is a good point to report back\". They stall a run that nobody will answer.",
-  "- Keep a checklist of the task's parts and work it down. While the checklist has open items, a text-only reply is treated as a premature stop: Paperclip records it as `plan_only` and re-runs you a bounded number of times, so ending the turn early is wasted work rather than a quiet exit.",
+  "- Keep a checklist of the task's parts and work it down. A text-only reply is classified on its own: when it reads as runnable future work Paperclip records it as `plan_only` and re-runs you a bounded number of times, and when it does not it is recorded as `needs_followup` for a human to decide. Ending the turn early is wasted work either way, so do not rely on the re-run to rescue you.",
   "",
   "This never overrides confirmation. Risky, destructive, or irreversible actions still need their `request_confirmation` or explicit approval. It also does not apply while a human is present to answer: if you are waiting on an open `ask_user_questions` or `request_confirmation`, on a real blocker, or on a dependency, stop, set the disposition, and wait.",
   "",
