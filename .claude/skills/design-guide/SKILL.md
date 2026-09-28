@@ -126,6 +126,37 @@ Defined in `PriorityIcon.tsx`: critical (red/AlertTriangle), high (orange/ArrowU
 
 Inline colored dots: running (cyan, animate-pulse), active (green), paused (yellow), error (red), offline (neutral).
 
+### Blocked Inbox reason + action (K-20108)
+
+A blocked-inbox row answers three questions: which task, why it stopped, what to do. Two rules decide what the row is allowed to say.
+
+**Rule 1 — the chip prints the reason, the variant drives the styling.** `BlockedReasonChip` renders `blockedReasonLabel(reason)`, not `blockedVariantLabel(variant)`. The variant still selects colour, icon and `data-variant`, and still names the group the row is bucketed under. Printing the group label on the row made it redundant with its own group header *and* collapsed the server's 11 reasons into 6 indistinguishable strings — `needs_attention` covers Unassigned blocker, Parked blocker, Cancelled blocker and Review without action path alike.
+
+**Rule 2 — the action obeys a documented suppression rule.** `blockedRowActionLabel()` returns `null` when the action label is one of the liveness walk's fixed fallbacks, so nothing renders. Suppression is keyed on the **label**, never on the reason.
+
+Live census, 2026-09-28, `GET /api/companies/{id}/issues?status=blocked&includeBlockedInboxAttention=true` — 76 rows, 67 with attention (re-measured twice; the board drains between runs, the shape does not change):
+
+| action label | rows | `leafIssue` | rendered |
+|---|---|---|---|
+| `Inspect blocker chain` | 58 of 67 (87%) | `null` on all 58, one byte-identical detail string | no — suppressed |
+| `Answer confirmation` | 6 | varies | yes |
+| `Choose disposition` | 2 | varies | yes |
+| `Resume parked blocker` | 1 | varies | yes |
+
+`Inspect blocker chain` is the `blocked_chain_stalled` fallback branch of `server/src/services/recovery/issue-graph-liveness.ts`: it fires when no leaf produced a specific finding. It is dropped for two independent reasons — it names no target, and the rows already sit under a group header reading "Blocked chain stalled", so rendering it adds ~58 lines of noise and zero information.
+
+**The number that re-opens it.** Suppression lifts per-row, the moment any of these is true:
+
+1. `leafIssue` is non-null on a `blocked_chain_stalled` row (0 of 58 today), or
+2. the detail string stops being identical across stalled rows, or
+3. the label changes to name a target — e.g. `Unblock K-20015 by removing done blocker K-20016`.
+
+Because the rule is a label allowlist, all three lift it with no code change. A rule written as "hide the action when reason is `blocked_chain_stalled`" would have silently swallowed all three.
+
+**Search parity.** `blockedRowSearchTokens()` indexes exactly what the row displays: title, identifier, owner, the specific reason, the variant shown in the group header, the displayed action, and leaf/recovery refs. `action.detail` is not indexed, and a suppressed action is not findable either. Never let the search box index text the row does not show — a filter that matches on hidden strings is a lie about the result.
+
+Showcase: `ui/src/pages/DesignGuide.tsx` → "Blocked Inbox reason and action (K-20108)". Tests: `ui/src/lib/blockedInbox.test.ts`, `ui/src/components/BlockedReasonChip.test.tsx`, `ui/src/components/BlockedInboxView.test.tsx`.
+
 ---
 
 ## 6. Component Hierarchy

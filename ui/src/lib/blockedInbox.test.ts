@@ -12,7 +12,9 @@ import {
   blockedBadgeTone,
   blockedReasonLabel,
   blockedReasonVariant,
+  blockedRowActionLabel,
   blockedRowMatchesSearch,
+  blockedRowSearchTokens,
   blockedSeverityRank,
   blockedVariantLabel,
   buildBlockedInboxRows,
@@ -271,5 +273,133 @@ describe("blockedInbox", () => {
     expect(formatStoppedAge("2026-05-09T20:00:00.000Z", now)).toBe("stopped 4h");
     expect(formatStoppedAge("2026-05-07T00:00:00.000Z", now)).toBe("stopped 3d");
     expect(formatStoppedAge("2026-04-15T00:00:00.000Z", now)).toBe("stopped 3w");
+  });
+
+  describe("blockedRowActionLabel", () => {
+    it("suppresses the blocked_chain_stalled fallback action", () => {
+      // K-20108. The stall branch is the fallback of the liveness walk: on the
+      // live board it carried the action on 60 of 76 attended rows, all with
+      // `leafIssue: null`, so it names no target -- and the rows already sit
+      // under a group header reading "Blocked chain stalled".
+      expect(
+        blockedRowActionLabel(
+          makeAttention({
+            reason: "blocked_chain_stalled",
+            action: { label: "Inspect blocker chain", detail: "Inspect the stalled blocker or review leaf." },
+          }),
+        ),
+      ).toBeNull();
+    });
+
+    it("keeps the specific actions the stall fallback crowds out", () => {
+      // These are the 16 of 76 rows that named a real next step.
+      const cases: Array<[IssueBlockedInboxReason, string]> = [
+        ["pending_board_decision", "Answer confirmation"],
+        ["pending_user_decision", "Answer confirmation"],
+        ["missing_successful_run_disposition", "Choose disposition"],
+        ["blocked_by_assigned_backlog_issue", "Resume parked blocker"],
+        ["blocked_by_unassigned_issue", "Assign blocker"],
+        ["blocked_by_cancelled_issue", "Replace blocker"],
+      ];
+      for (const [reason, label] of cases) {
+        expect(blockedRowActionLabel(makeAttention({ reason, action: { label, detail: null } }))).toBe(label);
+      }
+    });
+
+    it("does not suppress a specific action that arrives on a stalled row", () => {
+      // The rule keys on the label, not the reason, so a future server that
+      // attaches a real target to a stalled chain will surface it rather than
+      // silently dropping it. This is the re-open path documented on the fn.
+      expect(
+        blockedRowActionLabel(
+          makeAttention({
+            reason: "blocked_chain_stalled",
+            action: { label: "Unblock K-20015 by removing done blocker K-20016", detail: null },
+          }),
+        ),
+      ).toBe("Unblock K-20015 by removing done blocker K-20016");
+    });
+
+    it("treats a blank action as no action", () => {
+      expect(
+        blockedRowActionLabel(makeAttention({ reason: "pending_board_decision", action: { label: "   ", detail: null } })),
+      ).toBeNull();
+    });
+  });
+
+  describe("blockedRowSearchTokens", () => {
+    it("only indexes text the row actually displays", () => {
+      // The parity contract. Before K-20108 the haystack carried
+      // `action.detail`, which the row never rendered in any form, so a search
+      // could match a row that showed nothing of the sort.
+      const row = buildBlockedInboxRows([
+        makeIssue(
+          { id: "p1", title: "Ship the batch" },
+          makeAttention({
+            reason: "pending_board_decision",
+            action: { label: "Answer confirmation", detail: "SECRET_DETAIL_SENTINEL" },
+          }),
+        ),
+      ])[0]!;
+      const tokens = blockedRowSearchTokens(row).join(" ");
+      expect(tokens).toContain("Answer confirmation");
+      expect(tokens).toContain("Pending board decision");
+      expect(tokens).not.toContain("SECRET_DETAIL_SENTINEL");
+    });
+
+    it("indexes the specific reason and the group label, and not a suppressed action", () => {
+      const row = buildBlockedInboxRows([
+        makeIssue(
+          { id: "p2", title: "Stalled thing" },
+          makeAttention({
+            reason: "blocked_chain_stalled",
+            action: { label: "Inspect blocker chain", detail: null },
+          }),
+        ),
+      ])[0]!;
+      const tokens = blockedRowSearchTokens(row);
+      // The specific reason the chip now prints.
+      expect(tokens).toContain("Blocked chain stalled");
+      // Suppressed on screen, so it must not be findable either -- otherwise the
+      // suppression hides the text while leaving it searchable.
+      expect(tokens).not.toContain("Inspect blocker chain");
+      expect(blockedRowMatchesSearch(row, "Inspect blocker chain")).toBe(false);
+    });
+
+    it("indexes the group label separately from the reason label", () => {
+      // These are two different strings and both are on screen: the reason on
+      // the chip, the variant on the group header the row is bucketed under.
+      const row = buildBlockedInboxRows([
+        makeIssue(
+          { id: "p4", title: "Needs an owner" },
+          makeAttention({
+            reason: "blocked_by_unassigned_issue",
+            action: { label: "Assign blocker", detail: null },
+          }),
+        ),
+      ])[0]!;
+      const tokens = blockedRowSearchTokens(row);
+      expect(tokens).toContain("Unassigned blocker");
+      expect(tokens).toContain("Needs attention");
+      expect(blockedRowMatchesSearch(row, "Needs attention")).toBe(true);
+      expect(blockedRowMatchesSearch(row, "Unassigned blocker")).toBe(true);
+    });
+
+    it("finds a row by the specific reason its chip now prints", () => {
+      // The bug this fixes: typing "Parked blocker" matched K-20036 and the row
+      // then displayed "Needs attention".
+      const row = buildBlockedInboxRows([
+        makeIssue(
+          { id: "p3", title: "Waiting on a parked task" },
+          makeAttention({
+            reason: "blocked_by_assigned_backlog_issue",
+            action: { label: "Resume parked blocker", detail: null },
+          }),
+        ),
+      ])[0]!;
+      expect(blockedRowMatchesSearch(row, "Parked blocker")).toBe(true);
+      expect(blockedReasonLabel(row.attention.reason)).toBe("Parked blocker");
+      expect(blockedRowActionLabel(row.attention)).toBe("Resume parked blocker");
+    });
   });
 });

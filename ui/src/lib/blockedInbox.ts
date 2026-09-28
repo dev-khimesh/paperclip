@@ -82,6 +82,55 @@ export function blockedVariantLabel(variant: BlockedReasonVariant): string {
   return BLOCKED_VARIANT_LABELS[variant];
 }
 
+/**
+ * Action labels the liveness walk emits as a fixed fallback, with no target
+ * attached. These ship verbatim on every row that reaches the same branch.
+ */
+const GENERIC_BLOCKED_ACTION_LABELS: ReadonlySet<string> = new Set([
+  "Inspect blocker chain",
+  "Inspect blocked chain",
+]);
+
+/**
+ * The server's recommended next step, or `null` when it would add nothing the
+ * row does not already show.
+ *
+ * Every `blockedInboxAttention` carries an `action`, but not every action is
+ * information. `blocked_chain_stalled` is the fallback branch of the liveness
+ * walk (`server/src/services/recovery/issue-graph-liveness.ts`): it fires when
+ * no leaf produced a specific finding, and it ships one fixed label and one
+ * fixed detail string for every such row.
+ *
+ * Measured 2026-09-28 on the live board, twice — the board moves, the shape does
+ * not. First pass 76 attended rows, second pass 67 (the board drains between
+ * runs), same four labels, same ratio:
+ *
+ *   `Inspect blocker chain`  58 of 67 (87%)  every one with `leafIssue: null`
+ *   `Answer confirmation`     6 rows
+ *   `Choose disposition`      2 rows
+ *   `Resume parked blocker`   1 row
+ *
+ * So the fallback is suppressed for two independent reasons. It cannot name a
+ * target, because `leafIssue` is null on all 58 and the detail string is byte
+ * identical across them — so the instruction "inspect the stalled blocker or
+ * review leaf" points at nothing. And the rows are already bucketed under a
+ * group header reading "Blocked chain stalled", so repeating it per row is ~60
+ * copies of the header. The other 9 actions are specific and are shown.
+ *
+ * The rule matches on the **label**, not on the reason. That is deliberate: if
+ * the server later attaches a real target to a stalled chain -- for example
+ * "remove done blocker K-20016" -- the new label is not in the set, so it
+ * surfaces on its own with no change here. Suppressing on the reason instead
+ * would have silently swallowed it, which is the failure mode this codebase has
+ * already paid for twice.
+ */
+export function blockedRowActionLabel(attention: IssueBlockedInboxAttention): string | null {
+  const label = attention.action?.label?.trim();
+  if (!label) return null;
+  if (GENERIC_BLOCKED_ACTION_LABELS.has(label)) return null;
+  return label;
+}
+
 export function blockedSeverityRank(severity: IssueBlockedInboxSeverity): number {
   return SEVERITY_RANK[severity] ?? 9;
 }
@@ -215,23 +264,44 @@ export function groupBlockedInboxRows(
   return groups;
 }
 
+/**
+ * The tokens a row can be found by, which are exactly the tokens the row shows.
+ *
+ * This is the parity contract the inbox needs. It previously indexed
+ * `attention.action.label`, `attention.action.detail` and `reasonLabel` while
+ * the row rendered only `blockedVariantLabel(variant)` — so a search for
+ * "Parked blocker" matched K-20036 and the row then displayed "Needs
+ * attention", and a search for "Answer confirmation" matched six rows that
+ * showed no action at all. Filtering on text the user cannot see makes the
+ * search box lie about the result.
+ *
+ * Every token below is now rendered somewhere on the row: `reasonLabel` by the
+ * reason chip, `actionLabel` beneath it, `variant` by the group header the row
+ * is bucketed under, and the owner/leaf/recovery refs by the row's identity and
+ * linked blockers. `actionLabel` goes through `blockedRowActionLabel` so a
+ * suppressed action is not searchable either — otherwise the suppression would
+ * hide the text on screen while leaving it findable.
+ */
+export function blockedRowSearchTokens(row: BlockedInboxIssueRow): string[] {
+  const attention = row.attention;
+  return [
+    row.issue.title,
+    row.issue.identifier ?? "",
+    attention.owner.label ?? "",
+    blockedRowActionLabel(attention) ?? "",
+    row.reasonLabel,
+    blockedVariantLabel(row.variant),
+    attention.leafIssue?.identifier ?? "",
+    attention.leafIssue?.title ?? "",
+    attention.recoveryIssue?.identifier ?? "",
+    attention.recoveryIssue?.title ?? "",
+  ];
+}
+
 export function blockedRowMatchesSearch(row: BlockedInboxIssueRow, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
-  const haystack = [
-    row.issue.title,
-    row.issue.identifier ?? "",
-    row.attention.owner.label ?? "",
-    row.attention.action.label,
-    row.attention.action.detail ?? "",
-    row.reasonLabel,
-    row.attention.leafIssue?.identifier ?? "",
-    row.attention.leafIssue?.title ?? "",
-    row.attention.recoveryIssue?.identifier ?? "",
-    row.attention.recoveryIssue?.title ?? "",
-  ]
-    .join(" ")
-    .toLowerCase();
+  const haystack = blockedRowSearchTokens(row).join(" ").toLowerCase();
   return haystack.includes(q);
 }
 

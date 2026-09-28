@@ -9,6 +9,7 @@ import { cn } from "../lib/utils";
 import { applyIssueFilters, type IssueFilterState, type IssueFilterWorkspaceContext } from "../lib/issue-filters";
 import { resolveInboxIssueBlockerAttention } from "../lib/inbox-live-descendants";
 import {
+  blockedRowActionLabel,
   blockedRowMatchesSearch,
   buildBlockedInboxRows,
   formatStoppedAge,
@@ -316,6 +317,7 @@ function BlockedInboxRow({
 }: BlockedInboxRowProps) {
   const { label: ownerName, isAgent } = resolveOwnerName(row, agentNameById, userLabelById);
   const stoppedAge = formatStoppedAge(row.attention.stoppedSinceAt);
+  const actionLabel = blockedRowActionLabel(row.attention);
   const blockerAttention = resolveInboxIssueBlockerAttention(row.issue, {
     isLive: liveIssueIds.has(row.issue.id),
     loadedSubtreeLiveCount: subtreeLiveCounts.get(row.issue.id) ?? 0,
@@ -324,7 +326,7 @@ function BlockedInboxRow({
   const desktopTrailing = (
     <span className="flex shrink-0 items-center gap-3 text-xs">
       <span
-        className="hidden w-(--sz-10_5rem) shrink-0 justify-start sm:inline-flex"
+        className="hidden w-(--sz-13_5rem) shrink-0 flex-col items-start gap-0.5 sm:flex"
         data-testid="blocked-row-reason-column"
       >
         <BlockedReasonChip
@@ -332,6 +334,15 @@ function BlockedInboxRow({
           severity={row.attention.severity}
           className="max-w-full"
         />
+        {actionLabel ? (
+          <span
+            data-testid="blocked-row-action"
+            className="max-w-full truncate text-(length:--text-nano) text-muted-foreground sm:text-(length:--text-micro)"
+            title={actionLabel}
+          >
+            {actionLabel}
+          </span>
+        ) : null}
       </span>
       {ownerName ? (
         <span className="hidden w-(--sz-150px) min-w-0 items-center text-muted-foreground sm:inline-flex">
@@ -359,6 +370,14 @@ function BlockedInboxRow({
             data-testid="blocked-row-owner-mobile"
           >
             {ownerName}
+          </span>
+        </>
+      ) : null}
+      {actionLabel ? (
+        <>
+          <span aria-hidden="true">·</span>
+          <span data-testid="blocked-row-action-mobile" className="min-w-0 truncate">
+            {actionLabel}
           </span>
         </>
       ) : null}
