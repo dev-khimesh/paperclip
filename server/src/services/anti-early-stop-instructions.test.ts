@@ -6,7 +6,7 @@ import {
 } from "./anti-early-stop-instructions.js";
 import { loadDefaultAgentInstructionsBundle } from "./default-agent-instructions.js";
 import { buildOnboardingFirstAgentInstructionsBundle } from "./onboarding-first-task-assets.js";
-import { listBuiltInAgentDefinitions } from "./built-in-agents.js";
+import { listBuiltInAgentDefinitions, validateBuiltInAgentDefinitions } from "./built-in-agents.js";
 
 // K-20104. Unattended runs end early when a turn closes with a status update
 // instead of a tool call, because the harness reads `stop_reason: "end_turn"` as
@@ -107,5 +107,32 @@ describe("built-in instruction bundles carry the block", () => {
       const occurrences = content.split(ANTI_EARLY_STOP_HEADING).length - 1;
       expect(occurrences, definition.key).toBe(1);
     }
+  });
+
+  it("stays single after the bundle is assembled twice", async () => {
+    // Idempotency has to hold on the real assembly path, not just the raw helper.
+    // Bundles are re-assembled on reconcile and re-materialized on stock updates,
+    // so `validateBuiltInAgentDefinitions` runs more than once per agent over its
+    // life. Re-running it must not grow the block.
+    const [first, second] = [
+      validateBuiltInAgentDefinitions(listBuiltInAgentDefinitions()),
+      validateBuiltInAgentDefinitions(listBuiltInAgentDefinitions()),
+    ];
+    for (const pass of [first, second]) {
+      for (const definition of pass) {
+        const entry = definition.bundle?.instructions.entryFile;
+        if (!entry) continue;
+        const content = definition.bundle!.instructions.files[entry]!;
+        const occurrences = content.split(ANTI_EARLY_STOP_HEADING).length - 1;
+        expect(occurrences, `${definition.key} on re-assembly`).toBe(1);
+      }
+    }
+
+    // The default bundle is read from disk on every call, so it is the one path
+    // that can genuinely see the same source twice.
+    const a = (await loadDefaultAgentInstructionsBundle("default"))["AGENTS.md"]!;
+    const b = (await loadDefaultAgentInstructionsBundle("default"))["AGENTS.md"]!;
+    expect(a).toBe(b);
+    expect(a.split(ANTI_EARLY_STOP_HEADING).length - 1).toBe(1);
   });
 });
