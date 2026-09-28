@@ -15,12 +15,13 @@
  */
 
 const http = require('node:http');
-const { SuppressionList } = require('./suppression.cjs');
+const { SuppressionList, resolveStorePath } = require('./suppression.cjs');
+const { preflight, recordStopReply, parseStopReply } = require('./preflight.cjs');
 
 const PORT = Number(process.env.OPTOUT_PORT || 8787);
 const HOST = process.env.OPTOUT_HOST || '127.0.0.1';
 
-const STORE_PATH = process.env.OPTOUT_STORE || undefined;
+const STORE_PATH = resolveStorePath();
 const list = new SuppressionList(STORE_PATH);
 
 function sendJson(res, status, body) {
@@ -84,7 +85,81 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
   if (url.pathname === '/health') {
-    return sendJson(res, 200, { ok: true, suppressed: list.count(), fingerprint: list.fingerprint() });
+    return sendJson(res, 200, {
+      ok: true,
+      suppressed: list.count(),
+      fingerprint: list.fingerprint(),
+      store: STORE_PATH,
+      storeReadable: list.isReadable(),
+    });
+  }
+
+  // Send preflight. Served by the same origin, from the same in-process store,
+  // that serves {OPT_OUT_URL} — so the send step and the opt-out page cannot
+  // drift onto two different lists. The send step calls this immediately
+  // before dispatch, not once at batch start.
+  if (url.pathname === '/send-preflight' && req.method === 'POST') {
+    let body;
+    try {
+      body = JSON.parse((await readBody(req)) || '{}');
+    } catch (_err) {
+      return sendJson(res, 400, { ok: false, reason: 'invalid_body' });
+    }
+    const recipients = Array.isArray(body.recipients)
+      ? body.recipients
+      : String(body.recipients || '').split(/[\s,;]+/).filter(Boolean);
+    const report = preflight(recipients, { list, campaign: body.campaign ?? null });
+    return sendJson(res, report.fatal ? 503 : 200, {
+      ok: report.ok,
+      fatal: report.fatal,
+      exitCode: report.exitCode,
+      storeReadable: report.storeReadable,
+      storeFingerprint: report.storeFingerprint,
+      campaign: report.campaign,
+      checkedAt: report.checkedAt,
+      allowed: report.allowed,
+      blocked: report.blocked,
+    });
+  }
+
+  // STOP / unsubscribe reply processing. Writes to the same global store the
+  // preflight reads, so a reply opt-out takes effect on the very next dispatch.
+  if (url.pathname === '/stop') {
+    if (req.method !== 'POST') {
+      return sendJson(res, 405, { ok: false, reason: 'method_not_allowed' });
+    }
+    let body;
+    try {
+      body = JSON.parse((await readBody(req)) || '{}');
+    } catch (_err) {
+      return sendJson(res, 400, { ok: false, reason: 'invalid_body' });
+    }
+    if (body.email === undefined && body.body !== undefined) {
+      const parsed = parseStopReply(body.body);
+      if (!parsed.isStopRequest) {
+        return sendJson(res, 422, { ok: false, reason: 'not_a_stop_request' });
+      }
+    }
+    let result;
+    try {
+      result = recordStopReply(body.email, {
+        list,
+        source: body.source || 'stop-reply',
+        campaign: body.campaign ?? null,
+      });
+    } catch (err) {
+      return sendJson(res, 503, { ok: false, reason: 'store_unavailable', detail: err.message });
+    }
+    if (!result.ok) {
+      return sendJson(res, 422, { ok: false, reason: result.reason, email: result.email });
+    }
+    return sendJson(res, 200, {
+      ok: true,
+      added: result.added,
+      already: result.already,
+      suppressedAt: result.entry.suppressedAt,
+      fingerprint: list.fingerprint(),
+    });
   }
 
   if (url.pathname === '/suppression-list') {
@@ -109,7 +184,16 @@ const server = http.createServer(async (req, res) => {
     if (!email) {
       return sendJson(res, 400, { ok: false, reason: 'missing_email' });
     }
-    const result = list.suppress(email, { source: 'opt-out-endpoint' });
+    let result;
+    try {
+      result = list.suppress(email, { source: 'opt-out-endpoint' });
+    } catch (err) {
+      // The opt-out could not be written. Never confirm it — a recipient told
+      // "you have been removed" who then receives another email is the worst
+      // outcome this control has. 503 + no confirmation, and the sender's
+      // preflight keeps this address blocked until the store is repaired.
+      return sendJson(res, 503, { ok: false, reason: 'store_unavailable', detail: err.message });
+    }
     if (!result.ok) {
       return sendJson(res, 422, { ok: false, reason: result.reason, email: result.email });
     }

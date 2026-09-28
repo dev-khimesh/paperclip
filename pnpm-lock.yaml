@@ -151,6 +151,8 @@ importers:
         specifier: ^7.0.2
         version: 7.0.2
 
+  marketing/can-spam: {}
+
   packages/adapter-utils:
     dependencies:
       '@paperclipai/shared':

@@ -21,6 +21,20 @@ const DEFAULT_STORE_PATH = path.join(__dirname, 'suppression-list.json');
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/**
+ * The one place the store's location is decided.
+ *
+ * Both the opt-out origin (which serves {OPT_OUT_URL}) and the send preflight
+ * resolve through here, so there is exactly one file behind exactly one reader
+ * process. A store the send step cannot read is not a control.
+ *
+ * CAN_SPAM_STORE is canonical; OPTOUT_STORE is honoured for the existing
+ * server/CLI entry points.
+ */
+function resolveStorePath(env = process.env) {
+  return env.CAN_SPAM_STORE || env.OPTOUT_STORE || DEFAULT_STORE_PATH;
+}
+
 function normalizeEmail(email) {
   if (typeof email !== 'string') return null;
   const trimmed = email.trim().toLowerCase();
@@ -48,18 +62,66 @@ class SuppressionList {
       const raw = fs.readFileSync(this.storePath, 'utf8');
       const parsed = JSON.parse(raw);
       if (parsed && parsed.version === 1 && parsed.entries && typeof parsed.entries === 'object') {
+        this.loadError = null;
+        this.loadedFromDisk = true;
         return parsed;
       }
-    } catch (_err) {
-      // Missing or unreadable store: start clean rather than crash.
+      this.loadError = new Error('unrecognised store shape');
+      this.loadedFromDisk = true;
+    } catch (err) {
+      // Missing or unreadable store: start clean rather than crash. Callers that
+      // must *prove* an address is clear (the send preflight) check loadError
+      // and fail closed instead of reading an empty list as "nothing suppressed".
+      this.loadError = err;
+      this.loadedFromDisk = false;
     }
     return newStore();
   }
 
+  /**
+   * Re-read the store from disk. The send preflight calls this on every
+   * invocation so an opt-out recorded mid-batch is observed by the next
+   * dispatch decision, not only at batch start.
+   */
+  refresh() {
+    this.store = this._load();
+    return this;
+  }
+
+  /**
+   * True when the backing file was read and parsed successfully. False means
+   * "this list is empty because we could not read it" — never "nothing is
+   * suppressed".
+   */
+  isReadable() {
+    return this.loadError === null;
+  }
+
+  /**
+   * The recorded opt-out for an address, or null. Lets a caller attach the
+   * legally relevant metadata (suppressedAt, source) to a block decision
+   * without re-deriving it.
+   */
+  entryFor(email) {
+    const key = normalizeEmail(email);
+    if (!key) return null;
+    return this.store.entries[key] || null;
+  }
+
   _persist() {
+    // The store may be pointed at a path that does not exist yet (first
+    // deployment, or CAN_SPAM_STORE moved). Create it rather than failing a
+    // write — but never silently swallow a real write failure.
+    fs.mkdirSync(path.dirname(this.storePath), { recursive: true });
     const tmp = `${this.storePath}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(this.store, null, 2));
     fs.renameSync(tmp, this.storePath);
+  }
+
+  /** Public write, for operator tooling that mutates the store directly. */
+  persist() {
+    this._persist();
+    return this;
   }
 
   isSuppressed(email) {
@@ -72,6 +134,11 @@ class SuppressionList {
    * Record an opt-out. Idempotent: re-suppressing an existing address is a
    * no-op that returns already=true and never overwrites the original
    * suppressedAt timestamp (the first opt-out is the legally relevant one).
+   *
+   * Fails closed in the write direction: if the store cannot be written the
+   * call throws and the entry is rolled back, so a caller can never report an
+   * opt-out as recorded when it was not. Telling a recipient "you have been
+   * removed" and then emailing them again is the worst outcome available here.
    */
   suppress(email, meta = {}) {
     const key = normalizeEmail(email);
@@ -90,7 +157,12 @@ class SuppressionList {
       reason: meta.reason || 'opt-out',
     };
     this.store.entries[key] = entry;
-    this._persist();
+    try {
+      this._persist();
+    } catch (err) {
+      delete this.store.entries[key];
+      throw err;
+    }
     return { ok: true, added: true, already: false, entry };
   }
 
@@ -146,4 +218,4 @@ class SuppressionList {
   }
 }
 
-module.exports = { SuppressionList, normalizeEmail, DEFAULT_STORE_PATH };
+module.exports = { SuppressionList, normalizeEmail, resolveStorePath, newStore, DEFAULT_STORE_PATH };
