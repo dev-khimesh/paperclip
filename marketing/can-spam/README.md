@@ -1,6 +1,9 @@
 # CAN-SPAM Opt-Out + Global Suppression List
 
-**Status:** Built and tested end-to-end (**89/89 checks pass**). Wired to the send path by K-20062.
+**Status:** Built and tested end-to-end (**159/159 checks pass**). The guard is **available but not yet
+enforced**: K-20062 supplies a callable, fail-closed preflight and the process the send step must
+follow, not a call wired into a live sender. **No emails have been sent, and nothing here
+authorises one.** See `DECISION-day1-send-path.md` and §3e.
 **Date:** 2026-09-28. **Sends:** K-20051 (P2 send precondition). **Depends on:** P1 entity (K-19926), P3 sending domain (K-19858) — see §5.
 
 This is the machinery that makes the `{OPT_OUT_URL}` in the K-247 Day-1 CAN-SPAM footer actually operate, per 15 U.S.C. §7704(4)(C)(iii). It is deliberately built **entity-independent**: the suppression logic does not depend on the legal name or the verified sending domain, so it is built and tested now and goes live by pointing the domain at it when P3 lands.
@@ -59,6 +62,7 @@ A **single** store, shared across every campaign and every list the company hold
 - **Global enforcement** — the import guard (`filterImport`) strips any suppressed address from *any* incoming list/campaign, and the send preflight (`preflight`) refuses to dispatch to a suppressed address. Both read the one store.
 - **Cannot be re-imported** — enforced at import time, before an address reaches a send queue. Proven by test §4 below.
 - **Idempotent + auditable** — re-suppressing preserves the original `suppressedAt` (the legally relevant first opt-out). Every entry records `source`, `campaign`, `reason`, `suppressedAt`.
+- **A write can only add, never erase** — the store has two independent writers (the long-lived origin and operator tooling), and each one holds its own in-memory copy. The write path takes an exclusive lock, re-reads the file inside it, and merges, so a second writer cannot overwrite an opt-out the first recorded. A store that exists but cannot be parsed is **never** written: the in-memory fallback is an empty list, and persisting that would silently un-suppress everyone on it. Proven by test §22–23.
 
 ---
 
@@ -68,9 +72,9 @@ A **single** store, shared across every campaign and every list the company hold
 |---|---|
 | `suppression.cjs` | Core store. Pure logic, no framework. `SuppressionList` class + `resolveStorePath()`. |
 | `preflight.cjs` | **The send gate.** `preflight()` (fail-closed dispatch check), `recordStopReply()`, `parseStopReply()`, append-only audit log. |
-| `server.cjs` | HTTP origin: landing page (`GET /opt-out`), JSON API (`POST /opt-out`), **send preflight (`POST /send-preflight`)**, **STOP recording (`POST /stop`)**, read-only list view (`GET /suppression-list`), health (`GET /health`). Zero dependencies (node:http). |
+| `server.cjs` | HTTP origin: landing page (`GET /opt-out`), JSON API (`POST /opt-out`), **send preflight (`POST /send-preflight`)**, **STOP recording (`POST /stop`)**, read-only list view (`GET /suppression-list`), health (`GET /health`). Zero dependencies (node:http). Only `/opt-out` and bare `/health` are public — see §3f. |
 | `check-suppression.cjs` | CLI the send agent calls: `preflight`, `stop`, `check`, `batch`, `list`. |
-| `tests/e2e.test.cjs` | End-to-end test, **89 checks**. Real HTTP, real on-disk store, isolated temp dir. |
+| `tests/e2e.test.cjs` | End-to-end test, **159 checks**. Real HTTP, real on-disk store, isolated temp dir. |
 | `DECISION-day1-send-path.md` | Which component performs the Day-1 send, and why. (K-20062 AC1.) |
 | `suppression-list.json` | The live store. **Not committed** — it holds real opted-out addresses (personal data). `CAN_SPAM_STORE` points at it. |
 | `send-audit.log` | Append-only record of every preflight and every STOP. **Not committed** (same reason). `CAN_SPAM_AUDIT_LOG` points at it. |
@@ -97,10 +101,12 @@ re-reads the store on every call, so a recipient who opts out while the batch is
 excluded from the unsent remainder. This is the K-20062 defect scenario, and it is proven by
 test §4 [13].
 
-The same check over HTTP, against the same origin that serves `{OPT_OUT_URL}`:
+The same check over HTTP, against the same origin that serves `{OPT_OUT_URL}`. The route is
+internal — it needs the origin token (§3f):
 
 ```bash
 curl -sX POST "$OPTOUT_ORIGIN/send-preflight" \
+  -H "Authorization: Bearer $CAN_SPAM_API_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"campaign":"k247-day1","recipients":["a@x.com","b@x.com"]}'
 ```
@@ -112,11 +118,19 @@ curl -sX POST "$OPTOUT_ORIGIN/send-preflight" \
 | `0` | every recipient clear | send to `allowed` |
 | `1` | at least one recipient blocked | **do not** send to anything in `blocked`; send the rest |
 | `3` | store unreadable — status **cannot be proven** | **send nothing**; escalate |
+| `4` | audit log unwritable — the dispatch **cannot be attested** | **send nothing**; escalate |
 | `2` | usage error | fix the invocation |
 
 Code `3` is deliberately distinct from `1`. A suppressed address and an *unknown* address are
 both "do not send", but only one of them is a broken control, and only one of them is Legal's
 problem to hear about.
+
+Code `4` is distinct again, and it is the one that is easiest to get wrong. The audit log is what
+makes an exclusion provable after the fact; a dispatch whose record cannot be written cannot be
+reconciled against the store, so it is the same failure as an unsuppressed send. A preflight whose
+log is unwritable returns **no allowed recipients**, not the clear list it had already computed.
+Do not relax this to "warn and continue" — the warning is the only thing that survives, and the
+send is the thing that matters.
 
 ### 3c. The preflight fails closed. Read this before working on it
 
@@ -125,10 +139,51 @@ problem to hear about.
   is suppressed" are different facts and only one of them is safe to act on.
 - An **unparseable** recipient is blocked with `invalid_recipient`. It is never silently
   dropped.
+- An **unwritable audit log** blocks every recipient with `audit_unavailable` and exits `4`,
+  even when the store is perfectly readable and every address is clear. The decision has already
+  been made at that point, and it is still not allowed to happen, because nobody could afterwards
+  show what it was. Each block carries `priorReason` so the real reason is not lost.
 - This is a deliberate difference from `filterImport`, which *does* silently skip invalid
   addresses. That is correct for an import filter and wrong for a send gate, so the two are
   separate functions over the same store. `tests/e2e.test.cjs` §12 asserts they agree on every shared
   decision.
+
+### 3f. Public routes vs. internal routes
+
+One origin serves two audiences, so the routes are split. This matters because the store is a list
+of people who asked not to be contacted.
+
+| Route | Audience | Gate |
+|---|---|---|
+| `GET/POST /opt-out` | **public** — the recipient | none, by design |
+| `GET /health` | public probes | bare `{ok:true}` only |
+| `POST /send-preflight` | the send step | `CAN_SPAM_API_TOKEN` |
+| `POST /stop` | the reply forwarder | `CAN_SPAM_API_TOKEN` |
+| `GET /suppression-list` | Legal | `CAN_SPAM_API_TOKEN` |
+| `GET /health` (detail) | operator wiring checks | `CAN_SPAM_API_TOKEN` |
+
+**`/opt-out` stays unauthenticated on purpose.** 15 U.S.C. §7704(4)(C)(iii) requires the opt-out
+to be exercisable by the recipient without friction, so putting a token in front of it would
+defeat the control. The abuse it does permit is bounded and accepted: an attacker can suppress an
+address they do not own, which costs us one recipient and gains them nothing.
+
+**The internal routes fail closed.** If `CAN_SPAM_API_TOKEN` is unset, the origin authorises
+*nobody* and answers `503 api_token_unconfigured` — it does not fall open. The send step's
+contract is "dispatch only on a `200` with `ok:true`", so an unconfigured or unreachable origin
+means nothing is sent. Set the token on the same host that runs the send step:
+
+```bash
+export CAN_SPAM_API_TOKEN="$(openssl rand -hex 32)"   # same value in the origin's env
+curl -s "$OPTOUT_ORIGIN/suppression-list" -H "Authorization: Bearer $CAN_SPAM_API_TOKEN"
+```
+
+`/health` deliberately answers unauthenticated with nothing but `{ok:true}`, so a liveness probe
+keeps working while the store path, entry count and fingerprint stay behind the token.
+
+A supplied `source` is constrained to a known set (`opt-out-endpoint`, `stop-reply`, `operator-cli`,
+`import`) because it is caller-supplied, stored, and rendered back on the confirmation page. The
+page escapes every interpolated value as well — the allowlist is the first layer, the escaping is
+the second, and both are tested.
 
 ### 3d. Single-address, init, and list utilities
 
@@ -169,7 +224,7 @@ acceptance is tracked as a follow-up in the decision doc.
 ## 4. How to run
 
 ```bash
-# end-to-end test (89 checks; isolated temp store, never touches the live list)
+# end-to-end test (159 checks; isolated temp store, never touches the live list)
 node marketing/can-spam/tests/e2e.test.cjs
 
 # start the origin (also the {OPT_OUT_URL} target)
@@ -186,7 +241,7 @@ honoured), `CAN_SPAM_AUDIT_LOG` (audit log path).
 
 ## 4a. Test evidence (2026-09-28)
 
-`node marketing/can-spam/tests/e2e.test.cjs` → **89 passed, 0 failed**, in CI on every PR touching
+`node marketing/can-spam/tests/e2e.test.cjs` → **159 passed, 0 failed**, in CI on every PR touching
 `marketing/can-spam/` (`.github/workflows/can-spam-suppression.yml`). Real HTTP, real on-disk
 store, isolated temp dir. The checks that close K-20062:
 
@@ -220,7 +275,14 @@ The machinery is live-tested but **not yet fronted by a real domain**, because:
 3. Set the footer entity lines from the P1 company record.
 4. Publish `stop@<verified-domain>` as the reply-to / reply-"STOP" mailbox — **only after the
    three unblock conditions in §1a**, and wire it to `POST /stop`.
-5. Re-run `tests/e2e.test.cjs` against the live store to confirm wiring.
+5. Set `CAN_SPAM_API_TOKEN` on the origin **and** on every machine that sends (§3f). Verify the
+   wiring against the *deployed* origin, not the test suite: `tests/e2e.test.cjs` always creates
+   and selects its own temp store, so a green run proves the code, never the deployment. Use a
+   store-fingerprint comparison instead —
+   `curl -s "$OPTOUT_ORIGIN/health" -H "Authorization: Bearer $CAN_SPAM_API_TOKEN"` and check the
+   `store` path, `storeReadable:true`, and that `fingerprint` matches
+   `node marketing/can-spam/check-suppression.cjs list` on the sending machine. A fingerprint
+   mismatch is the signal that the origin and the send step are reading two different lists.
 
 **No emails have been sent. K-19858 remains frozen.** This issue makes the opt-out *operable*
 and puts a real gate in front of the dispatch; it does not authorise a send.

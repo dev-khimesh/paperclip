@@ -21,11 +21,17 @@
  *      `invalid_recipient`, not skipped.
  *   4. Every exclusion is logged, append-only, with a reason — so a suppression
  *      is enforceable *and* attestable to Legal.
+ *   5. The record is part of the gate. If the audit log cannot be written, the
+ *      preflight is fatal with `audit_unavailable`: a dispatch that cannot be
+ *      reconciled against the log afterwards cannot be shown to have honoured
+ *      the store, so it does not happen. An unattributable send is the same
+ *      failure as an unsuppressed one.
  *
  * Exit codes (CLI and HTTP both use these):
  *   0 = every recipient clear, send may proceed
  *   1 = at least one recipient blocked, do not send to the blocked addresses
  *   3 = store unreadable — the preflight cannot prove anything, send nothing
+ *   4 = audit log unwritable — the dispatch cannot be attested, send nothing
  *   2 = usage error
  */
 
@@ -36,8 +42,15 @@ const { SuppressionList, normalizeEmail, resolveStorePath, DEFAULT_STORE_PATH } 
 const REASON_SUPPRESSED = 'globally_suppressed';
 const REASON_INVALID = 'invalid_recipient';
 const REASON_STORE_UNAVAILABLE = 'store_unavailable';
+const REASON_AUDIT_UNAVAILABLE = 'audit_unavailable';
 
-const EXIT = { CLEAR: 0, BLOCKED: 1, USAGE: 2, STORE_UNAVAILABLE: 3 };
+const EXIT = {
+  CLEAR: 0,
+  BLOCKED: 1,
+  USAGE: 2,
+  STORE_UNAVAILABLE: 3,
+  AUDIT_UNAVAILABLE: 4,
+};
 
 const DEFAULT_AUDIT_PATH = path.join(__dirname, 'send-audit.log');
 
@@ -56,9 +69,9 @@ function appendAudit(record, options = {}) {
   try {
     fs.appendFileSync(auditPath, line, { mode: 0o600 });
   } catch (err) {
-    // An unwritable audit log must not silently swallow an exclusion. The
-    // preflight result is still returned; the caller sees `audited:false` and
-    // Legal sees the gap.
+    // An unwritable audit log must not be swallowed. The caller (writeAudit)
+    // turns this into a fatal result, because a send whose record does not
+    // exist cannot be reconciled against the store afterwards.
     return { ok: false, path: auditPath, error: err.message };
   }
   return { ok: true, path: auditPath };
@@ -152,7 +165,7 @@ function preflight(recipients, options = {}) {
 }
 
 function writeAudit(report, options = {}) {
-  if (options.auditPath === null) return { ok: false, skipped: true };
+  if (options.auditPath === null) return { ok: false, skipped: true, explicit: true };
   const audit = appendAudit(
     {
       event: 'send_preflight',
@@ -168,8 +181,32 @@ function writeAudit(report, options = {}) {
     },
     options
   );
-  report.audited = audit.ok;
-  if (!audit.ok && audit.error) report.auditError = audit.error;
+  if (audit.ok) {
+    report.audited = true;
+    return audit;
+  }
+  // Rule 5 — the record is part of the control. Rewrite the report to close the
+  // gate: the decision that was just taken cannot be attested, so no recipient
+  // is cleared and the caller is told why. Every row the preflight looked at is
+  // carried over — including the ones that were about to be allowed — so
+  // nothing silently disappears from the report. The log entry that would have
+  // recorded the decision is the very thing that failed to write.
+  const rows = [
+    ...report.allowed.map((email) => ({ email, reason: null })),
+    ...report.blocked,
+  ];
+  report.audited = false;
+  report.auditError = audit.error;
+  report.auditPath = audit.path;
+  report.fatal = true;
+  report.ok = false;
+  report.exitCode = EXIT.AUDIT_UNAVAILABLE;
+  report.allowed = [];
+  report.blocked = rows.map((row) => ({
+    ...row,
+    reason: REASON_AUDIT_UNAVAILABLE,
+    priorReason: row.reason,
+  }));
   return audit;
 }
 
@@ -193,7 +230,7 @@ function recordStopReply(email, options = {}) {
     reason: options.reason || 'recipient_stop_reply',
   });
   if (options.auditPath !== null) {
-    appendAudit(
+    const audit = appendAudit(
       {
         event: 'stop_reply_recorded',
         ok: result.ok,
@@ -206,6 +243,11 @@ function recordStopReply(email, options = {}) {
       },
       options
     );
+    // The suppression itself is already durable in the store, and a missing
+    // audit record must never un-suppress anyone. It is still reported, because
+    // a STOP the log cannot account for is a gap Legal has to see.
+    result.audited = audit.ok;
+    if (!audit.ok) result.auditError = audit.error;
   }
   return result;
 }
@@ -246,6 +288,7 @@ module.exports = {
   REASON_SUPPRESSED,
   REASON_INVALID,
   REASON_STORE_UNAVAILABLE,
+  REASON_AUDIT_UNAVAILABLE,
   EXIT,
   DEFAULT_AUDIT_PATH,
   DEFAULT_STORE_PATH,

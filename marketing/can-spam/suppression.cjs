@@ -22,6 +22,20 @@ const DEFAULT_STORE_PATH = path.join(__dirname, 'suppression-list.json');
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
+ * Write-serialisation. The store is one JSON file with two independent writers:
+ * the opt-out origin (long-lived HTTP server) and operator tooling / the reply
+ * forwarder (short-lived CLI). Without a lock the second writer's whole-file
+ * write erases whatever the first recorded in the interval — an opt-out
+ * confirmed to a recipient, then silently gone, then a send that a preflight
+ * had cleared. The write path therefore takes an exclusive lock, re-reads the
+ * file inside it, and merges, so a suppression can only ever be added.
+ */
+const LOCK_TIMEOUT_MS = 10000;
+const LOCK_POLL_MS = 25;
+/** A lock older than this belonged to a process that died holding it. */
+const LOCK_STALE_MS = 60000;
+
+/**
  * The one place the store's location is decided.
  *
  * Both the opt-out origin (which serves {OPT_OUT_URL}) and the send preflight
@@ -49,6 +63,22 @@ function newStore() {
       'Global CAN-SPAM suppression list. Single source of truth across all campaigns and lists. Opt-outs recorded here cannot be re-imported.',
     entries: {},
   };
+}
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function lockPathFor(storePath) {
+  return `${storePath}.lock`;
+}
+
+function lockAgeMs(lockPath) {
+  try {
+    return Date.now() - fs.statSync(lockPath).mtimeMs;
+  } catch (_err) {
+    return 0;
+  }
 }
 
 class SuppressionList {
@@ -98,6 +128,54 @@ class SuppressionList {
   }
 
   /**
+   * True when the backing file exists at all. The difference matters on the
+   * write path: a store that is absent can be created, a store that is present
+   * but unreadable must never be overwritten (see `suppress`).
+   */
+  storeFileExists() {
+    return fs.existsSync(this.storePath);
+  }
+
+  /**
+   * Run `fn` holding an exclusive lock on the store, so two writers cannot
+   * interleave a read-modify-write. A lock left behind by a process that died
+   * is reclaimed once it is older than LOCK_STALE_MS, because a wedged store
+   * would mean opt-outs could not be recorded at all.
+   */
+  _withLock(fn) {
+    const lockPath = lockPathFor(this.storePath);
+    fs.mkdirSync(path.dirname(this.storePath), { recursive: true });
+    const deadline = Date.now() + LOCK_TIMEOUT_MS;
+    let fd = null;
+    for (;;) {
+      try {
+        fd = fs.openSync(lockPath, 'wx');
+        break;
+      } catch (err) {
+        if (err.code !== 'EEXIST') throw err;
+        if (lockAgeMs(lockPath) > LOCK_STALE_MS) {
+          fs.rmSync(lockPath, { force: true });
+          continue;
+        }
+        if (Date.now() > deadline) {
+          throw new Error(`timed out waiting for the suppression store lock at ${lockPath}`);
+        }
+        sleepSync(LOCK_POLL_MS);
+      }
+    }
+    try {
+      return fn();
+    } finally {
+      try {
+        fs.closeSync(fd);
+      } catch (_err) {
+        /* the lock is released by unlink regardless */
+      }
+      fs.rmSync(lockPath, { force: true });
+    }
+  }
+
+  /**
    * The recorded opt-out for an address, or null. Lets a caller attach the
    * legally relevant metadata (suppressedAt, source) to a block decision
    * without re-deriving it.
@@ -135,35 +213,48 @@ class SuppressionList {
    * no-op that returns already=true and never overwrites the original
    * suppressedAt timestamp (the first opt-out is the legally relevant one).
    *
-   * Fails closed in the write direction: if the store cannot be written the
-   * call throws and the entry is rolled back, so a caller can never report an
-   * opt-out as recorded when it was not. Telling a recipient "you have been
-   * removed" and then emailing them again is the worst outcome available here.
+   * Fails closed in the write direction. The read-modify-write happens under an
+   * exclusive lock, re-reading the file first, so a second writer cannot erase
+   * an opt-out recorded while this instance was holding an older copy. And if
+   * the file exists but cannot be parsed, the write is refused outright: the
+   * in-memory fallback is an empty list, and persisting it would replace real
+   * opt-outs with nothing — the silent un-suppression `init` already refuses.
    */
   suppress(email, meta = {}) {
     const key = normalizeEmail(email);
     if (!key) {
       return { ok: false, reason: 'invalid_email', email: String(email) };
     }
-    const existing = this.store.entries[key];
-    if (existing) {
-      return { ok: true, added: false, already: true, entry: existing };
-    }
-    const entry = {
-      email: key,
-      suppressedAt: new Date().toISOString(),
-      source: meta.source || 'unknown',
-      campaign: meta.campaign || null,
-      reason: meta.reason || 'opt-out',
-    };
-    this.store.entries[key] = entry;
-    try {
-      this._persist();
-    } catch (err) {
-      delete this.store.entries[key];
-      throw err;
-    }
-    return { ok: true, added: true, already: false, entry };
+    return this._withLock(() => {
+      this.refresh();
+      if (!this.isReadable() && this.storeFileExists()) {
+        throw new Error(
+          `suppression store at ${this.storePath} is unreadable (${this.loadError && this.loadError.message}); ` +
+            'refusing to write, because doing so would overwrite the opt-outs it holds'
+        );
+      }
+      const existing = this.store.entries[key];
+      if (existing) {
+        return { ok: true, added: false, already: true, entry: existing };
+      }
+      const entry = {
+        email: key,
+        suppressedAt: new Date().toISOString(),
+        source: meta.source || 'unknown',
+        campaign: meta.campaign || null,
+        reason: meta.reason || 'opt-out',
+      };
+      this.store.entries[key] = entry;
+      try {
+        this._persist();
+      } catch (err) {
+        delete this.store.entries[key];
+        throw err;
+      }
+      this.loadError = null;
+      this.loadedFromDisk = true;
+      return { ok: true, added: true, already: false, entry };
+    });
   }
 
   list() {

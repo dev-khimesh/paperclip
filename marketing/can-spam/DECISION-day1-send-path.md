@@ -89,7 +89,11 @@ describes (silent, unobservable) survives advice intact. So the preflight is bui
    no second reader that can drift. A suppression list the send step cannot read is not a
    control (AC4).
 4. **Every exclusion is logged with a reason**, append-only, to a durable audit log — so a
-   suppression is not merely enforced but *attestable* to Legal.
+   suppression is not merely enforced but *attestable* to Legal. The record is part of the gate,
+   not a report beside it: if the audit log cannot be written the preflight returns **no allowed
+   recipients** and exits `4`, because a dispatch nobody can reconcile against the store is the
+   same failure as an unsuppressed one. Previously a clear list was returned with the audit
+   failure noted in a field the CLI printed nowhere — provable in a test, invisible in use.
 
 ## Consequences accepted
 
@@ -107,7 +111,7 @@ describes (silent, unobservable) survives advice intact. So the preflight is bui
 
 ## Deliberately not changed
 
-`filterImport` silently `continue`s past an invalid address (`suppression.cjs:117`). That is
+`filterImport` silently `continue`s past an invalid address (`suppression.cjs:281`). That is
 acceptable for an import filter, whose job is to keep bad records out of a list, and AC3 asks
 the preflight to *mirror* `filterImport` semantics against the same store. Rewriting it to
 fail closed would change import behaviour for a legal review that has not asked for it. The

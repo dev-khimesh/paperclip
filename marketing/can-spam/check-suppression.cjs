@@ -18,6 +18,7 @@
  *   1 = at least one address is suppressed
  *   2 = usage error
  *   3 = store unreadable — the preflight cannot prove anything, send nothing
+ *   4 = audit log unwritable — the dispatch cannot be attested, send nothing
  *
  * `preflight` is the command the send step must call immediately before
  * dispatch. It re-reads the store on every call, so an opt-out recorded
@@ -101,9 +102,12 @@ function cmdPreflight(file) {
   });
 
   if (report.fatal) {
+    const why =
+      report.exitCode === EXIT.AUDIT_UNAVAILABLE
+        ? `FATAL audit_unavailable (${report.auditError})\nAudit log: ${report.auditPath}`
+        : `FATAL store_unavailable (${report.storeError})\nStore: ${report.storePath}`;
     process.stderr.write(
-      `FATAL store_unavailable (${report.storeError})\n` +
-        `Store: ${report.storePath}\n` +
+      `${why}\n` +
         `Suppression status could not be proven for ${report.blocked.length} recipient(s). Send nothing.\n`
     );
     process.exit(report.exitCode);

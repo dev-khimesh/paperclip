@@ -31,17 +31,26 @@ jobs:
     name: preflight + opt-out e2e
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Pinned to the same commit SHAs the rest of this repo pins to (54 and 49
+      # uses respectively), so a re-tag of either action cannot change what runs
+      # here, and so there is exactly one pin to keep current.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: "22"
 
       - name: Run the suppression-list end-to-end test
-        # 89 checks. Covers the preflight's three load-bearing properties:
+        # 159 checks. Covers the preflight's load-bearing properties:
         #   - reachable from the same origin that serves {OPT_OUT_URL}
         #   - an opt-out recorded mid-batch blocks the unsent remainder
         #   - fails closed on an unreadable store or an unparseable recipient
+        #   - the suppressed set is not readable without the origin token
+        #   - a dispatch whose audit record cannot be written is fatal
+        #   - two writers cannot erase each other's opt-out
+        #   - a malformed body is a 400, not a crash of the public origin
         # The test uses an isolated temp store, so it never touches a real list.
         run: node marketing/can-spam/tests/e2e.test.cjs
 
