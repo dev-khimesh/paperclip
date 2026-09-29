@@ -1,3 +1,5 @@
+import { isAgentDirectoryCopy } from "./agent-directory-working-copies.js";
+
 import type { PaperclipTurnContext } from "@paperclipai/adapter-utils/server-utils";
 import { restoreNativeWorkspaceBestEffort } from "./native-runtime/native-workspace-best-effort.js";
 import {
@@ -67,6 +69,7 @@ import {
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import { agentService } from "./agents.js";
+import { agentInstructionWorkingCopyService, instructionWorkingCopyGuidance } from "./agent-instruction-working-copies.js";
 import { normalizeLegacyRunnerProvider } from "@paperclipai/adapter-utils";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -250,6 +253,7 @@ import {
 import {
   assertAgentCoreProfileRecoveryBinding,
   assertManagedProfileRecoveryBinding,
+  projectPaperclipRunnerTaskConfig,
   resolvePaperclipRunnerNativeProviderInput,
 } from "./native-runtime/provider-profile.js";
 import {
@@ -3308,6 +3312,7 @@ const heartbeatRunProcessGroupIdColumn =
 
 const heartbeatRunListColumns = {
   id: heartbeatRuns.id,
+  responsibleUserId: heartbeatRuns.responsibleUserId,
   companyId: heartbeatRuns.companyId,
   agentId: heartbeatRuns.agentId,
   invocationSource: heartbeatRuns.invocationSource,
@@ -3442,6 +3447,15 @@ const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
         'error', left(${heartbeatRuns.resultJson} ->> 'error', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
         'stdout', left(${heartbeatRuns.resultJson} ->> 'stdout', ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}),
         'stderr', left(${heartbeatRuns.resultJson} ->> 'stderr', ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}),
+        'instructionSave', case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'instructionSave') = 'object'
+          then jsonb_strip_nulls(jsonb_build_object(
+            'state', left(${heartbeatRuns.resultJson} #>> '{instructionSave,state}', 32),
+            'contract', left(${heartbeatRuns.resultJson} #>> '{instructionSave,contract}', 32),
+            'entryFile', left(${heartbeatRuns.resultJson} #>> '{instructionSave,entryFile}', 512),
+            'errorCode', left(${heartbeatRuns.resultJson} #>> '{instructionSave,errorCode}', 128),
+            'errorMessage', left(${heartbeatRuns.resultJson} #>> '{instructionSave,errorMessage}', 1024),
+            'storageWarning', left(${heartbeatRuns.resultJson} #>> '{instructionSave,storageWarning}', 1024)
+          )) end,
         'workspaceRestoreFailure', case when ${heartbeatRuns.resultJson} ->> 'workspaceRestoreFailure'
           in ('restore_permission_denied', 'restore_lock_timeout', 'restore_unsafe_archive', 'restore_failed')
           then ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure' end,
@@ -5238,11 +5252,13 @@ export function resolveLedgerCostStatus(input: {
   cachedInputTokens: number;
   outputTokens: number;
 }): CostStatus {
-  const hasTokenUsage =
-    input.inputTokens > 0 ||
-    input.cachedInputTokens > 0 ||
-    input.outputTokens > 0;
-  return input.costUsd == null && hasTokenUsage ? "unpriced" : "reported";
+  // A paused turn can have neither a token receipt nor a cost receipt. Zero
+  // normalized counters do not establish that its billed cost was zero.
+  return typeof input.costUsd === "number" &&
+    Number.isFinite(input.costUsd) &&
+    input.costUsd >= 0
+    ? "reported"
+    : "unpriced";
 }
 
 export function resolveCacheAdjustedCostUsd(input: {
@@ -9500,6 +9516,7 @@ export function heartbeatService(
     environmentRuntimeService(db, {
       pluginWorkerManager: options.pluginWorkerManager,
     });
+  const instructionCopies = agentInstructionWorkingCopyService(db, { environmentRuntime });
   const envOrchestrator = environmentRunOrchestrator(db, {
     pluginWorkerManager: options.pluginWorkerManager,
     environmentRuntime,
@@ -18866,6 +18883,14 @@ export function heartbeatService(
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
+    // Recovery never launches a provider or infers stopped ownership from
+    // terminal status. Uncaptured local copies require durable stop evidence.
+    await instructionCopies.recoverStopped().catch(error => {
+      logger.warn({ err: error }, "failed to recover stopped instruction copies");
+    });
+    await instructionCopies.recoverCaptured().catch(error => {
+      logger.warn({ err: error }, "failed to retry captured instruction revisions");
+    });
 
     // Complete persisted native results before generic orphan recovery. The
     // reconciler reads the durable workspace barrier and persisted runtime
@@ -22348,6 +22373,29 @@ export function heartbeatService(
       await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
       const workspaceRealization = realizationResult.workspaceRealization;
       const executionTarget = realizationResult.executionTarget;
+      let instructionCopy: Awaited<ReturnType<typeof instructionCopies.prepare>> = null;
+      let instructionSave: Record<string, unknown> | null = null;
+      const collectStoppedInstructions = async () => {
+        if (!instructionCopy) return;
+        let saved = await instructionCopies.collectStopped({ companyId: agent.companyId, runId: run.id, target: executionTarget });
+        // Capture before disposal. Exhausted bounded collection leaves a durable
+        // explicit loss report, never a claim that missing bytes were saved.
+        while (saved?.state === "pending_collection" && saved.attempts < 3) {
+          saved = await instructionCopies.collectStopped({ companyId: agent.companyId, runId: run.id, target: executionTarget });
+        }
+        if (!saved) return;
+        const receipt = parseObject(saved.receipt);
+        const storageWarning = readNonEmptyString(receipt.storageWarning);
+        instructionSave = { state: saved.state, entryFile: saved.entryFile,
+          ...(isAgentDirectoryCopy(saved) ? { contract: "agent_files", appliedCandidateHash: saved.candidateHash }
+            : { revisionId: parseObject(receipt.revision).id ?? null }), storageWarning, errorCode: saved.errorCode, errorMessage: saved.errorMessage };
+        await appendRunEvent(run, { eventType: "instruction_save", stream: "system",
+          level: !storageWarning && ["saved", "unchanged", "resolved"].includes(saved.state) ? "info" : "warn",
+          message: storageWarning ?? (saved.state === "saved" ? "Agent files saved."
+            : saved.state === "unchanged" ? "Instruction working copy is unchanged."
+              : saved.errorMessage ?? "Instruction edits were not saved. Review the preserved candidate in the agent instruction editor."),
+          payload: instructionSave });
+      };
       if (managedAiRuntime && aiBinding) {
         try { await assertManagedAiProjectAuth({ ...resolvedConfig, cwd: executionWorkspace.cwd }, aiBinding.provider, executionTarget); }
         catch { throw new ConfigurationIncompleteFailure("Project authentication conflicts with this agent’s managed AI connection", { configurationIncomplete: { reason: "ai_connection_incompatible", actionUrl: `/agents/${agent.id}/runtime` } }); }
@@ -23157,6 +23205,62 @@ export function heartbeatService(
           target: executionTarget,
           workspaceId: persistedExecutionWorkspace?.id ?? null,
         });
+        const hasInstructionFilesystem = nativeRuntimeResolution.kind !== "native"
+          ? adapter.supportsInstructionsBundle === true
+          : !["claude_managed_agents_api", "aws_agentcore_harness_api"].includes(nativeRuntimeResolution.profile.backend);
+        if (hasInstructionFilesystem) {
+          try {
+            // Missing contract fields on a restored session mean the deployed
+            // legacy format. New sessions opt into whole-directory persistence.
+            const priorFileRun = taskSessionForRun?.lastRunId
+              ? await db.select({ profile: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns).where(and(
+                  eq(heartbeatRuns.id, taskSessionForRun.lastRunId), eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id))).then(rows => rows[0])
+              : null;
+            const savedFileInput = parseObject(parseObject(run.runnerProfileJson).nativeExecutionInput);
+            const priorFileInput = Object.keys(savedFileInput).length ? savedFileInput : parseObject(parseObject(priorFileRun?.profile).nativeExecutionInput);
+            const priorWorkingCopy = parseObject(parseObject(parseObject(priorFileInput.runtimeContext).instructions).workingCopy);
+            instructionCopy = await instructionCopies.prepare({
+              companyId: agent.companyId, agentId: agent.id, runId: run.id,
+              target: executionTarget, cwd: executionWorkspace.cwd,
+              legacy: Object.keys(priorFileInput).length > 0 && priorWorkingCopy.kind !== "agent_files",
+            });
+          } catch (error) {
+            if ((error as { status?: number }).status !== 403) throw error;
+            // Missing write identity must not break a background run's read-only
+            // prompt. It must also never imply that ordinary file edits will save.
+            await appendRunEvent(run, { eventType: "instruction_save", stream: "system", level: "warn",
+              message: "Persistent instruction editing is unavailable. Use an authenticated user with instruction edit access and a managed instruction bundle.",
+              payload: { state: "unavailable", code: "INSTRUCTION_COPY_UNAVAILABLE" } });
+            const guidance = "No editable agent instruction working copy is registered for this turn. Use authenticated agent file tools for persistent edits; do not edit a private copy named in an earlier turn or claim its changes will persist.";
+            for (const key of ["paperclipTaskMarkdown", "paperclipTaskMarkdownCompact"]) {
+              context[key] = [readNonEmptyString(context[key]), guidance].filter(Boolean).join("\n\n");
+            }
+          }
+          if (instructionCopy) {
+            const storageWarning = readNonEmptyString(instructionCopy.receipt?.storageWarning);
+            if (storageWarning) {
+              instructionSave = { state: "prepared", contract: "agent_files", storageWarning };
+              // This is an advisory on the run, never an agent pause, execution
+              // failure, or scheduling gate. Keep it visible while work runs.
+              await db.update(heartbeatRuns).set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ instructionSave })}::jsonb` }).where(eq(heartbeatRuns.id, run.id));
+              await appendRunEvent(run, { eventType: "instruction_save", stream: "system", level: "warn",
+                message: storageWarning, payload: instructionSave });
+            }
+            runtimeConfig = { ...runtimeConfig, instructionsFilePath: path.join(instructionCopy.localRoot, instructionCopy.entryFile) };
+            if (isAgentDirectoryCopy(instructionCopy)) {
+              const workspace = parseObject(context.paperclipWorkspace);
+              context.paperclipWorkspace = { ...workspace, agentHome: instructionCopy.executionRoot,
+                // Keep the pre-existing permission root stable for ACP session
+                // identity. The per-run copy is already under the company root.
+                agentHomeForPermissions: workspace.agentHome,
+              };
+            }
+            const guidance = instructionWorkingCopyGuidance(instructionCopy);
+            for (const key of ["paperclipTaskMarkdown", "paperclipTaskMarkdownCompact"]) {
+              context[key] = [readNonEmptyString(context[key]), guidance].filter(Boolean).join("\n\n");
+            }
+          }
+        }
         let nativeExecution: NativeExecutionInput | null = null;
         let nativeRunnerInstanceId: string | null = null;
         if (nativeRuntimeResolution.kind === "native") {
@@ -23586,6 +23690,7 @@ export function heartbeatService(
               runId: run.id,
               runtimeConfig,
               runtimeSkillEntries,
+              instructionWorkingCopy: instructionCopy ? { rootPath: instructionCopy.executionRoot, entryPath: instructionCopy.entryFile, ...(isAgentDirectoryCopy(instructionCopy) ? { kind: "agent_files" as const } : {}) } : undefined,
             });
             const nativeExecutionWithCheckpoint =
               buildNativeExecutionWithCheckpoint({
@@ -23667,7 +23772,14 @@ export function heartbeatService(
                         : null,
                     ...resolvePaperclipRunnerNativeProviderInput({
                       backend: nativeRuntimeResolution.profile.backend,
-                      adapterConfig: agent.adapterConfig,
+                      adapterConfig: nativeRuntimeResolution.profile.backend === "codex_app_server"
+                        || nativeRuntimeResolution.profile.backend === "opencode_server"
+                        ? projectPaperclipRunnerTaskConfig(
+                            nativeRuntimeResolution.profile.backend,
+                            agent.adapterConfig,
+                            issueAssigneeOverrides?.adapterConfig,
+                          )
+                        : agent.adapterConfig,
                       managedProfile,
                       agentCoreProfile,
                     }),
@@ -24293,6 +24405,10 @@ export function heartbeatService(
                     },
                     onLog,
                     onEvent: onAdapterEvent,
+                    instructionWorkingCopy: instructionCopy ? {
+                      hasChanges: () => instructionCopies.hasChanges({ companyId: agent.companyId, runId: run.id, target: executionTarget }),
+                      collectStopped: collectStoppedInstructions,
+                    } : undefined,
                     preparationSpans: nativeRunnerPreparationSpans,
                     // Bootstrap with executable/home discovery while keeping
                     // configured provider values and the server-selected
@@ -24306,6 +24422,7 @@ export function heartbeatService(
                         process.env,
                         executionWorkspace.cwd,
                       ),
+                      ...(instructionCopy && isAgentDirectoryCopy(instructionCopy) ? { AGENT_HOME: instructionCopy.executionRoot } : {}),
                       ...(nativeMcpServer
                         ? {
                             PAPERCLIP_NATIVE_MCP_NAME: nativeMcpServer.name,
@@ -24486,6 +24603,7 @@ export function heartbeatService(
                         issueId,
                       );
                     },
+                    onProviderStopped: collectStoppedInstructions,
                     onDispatch: markDispatchStarted,
                     signal: executionControl.controller.signal,
                     ...(executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" ? {
@@ -24534,6 +24652,7 @@ export function heartbeatService(
             if (!guardedDispatch.dispatched) return;
             adapterResult = await guardedDispatch.resultPromise;
           }
+          if (instructionSave) adapterResult.resultJson = { ...adapterResult.resultJson, instructionSave };
           adapterResult = applyWorkspaceRestoreFailure(adapterResult);
           // A returned result can include a failed restore. Keep the workspace
           // barrier closed until required files have been restored.
@@ -24769,6 +24888,7 @@ export function heartbeatService(
               "failed to revoke heartbeat-run MCP gateway tokens",
             );
           }
+          await instructionCopies.release(agent.companyId, run.id);
         }
         // Reconcile the referenced-project set against the real remote staging outcome. A referenced
         // project can pass authorization and clone locally at run prep, then fail to stage into the
@@ -26160,6 +26280,15 @@ export function heartbeatService(
               },
             );
           }
+          // A retained or unverified process stays above this release boundary.
+          // If no stopped-copy capture occurred, preserve an explicit loss report.
+          const uncapturedInstructions = await instructionCopies.reportUnavailable(run.companyId, run.id);
+          if (uncapturedInstructions?.state === "unavailable") {
+            await appendRunEvent(run, { eventType: "instruction_save", stream: "system", level: "warn",
+              message: "Instruction edits could not be recovered before environment release. No instruction save is claimed.",
+              payload: { state: "unavailable", code: uncapturedInstructions.errorCode } });
+          }
+          await instructionCopies.release(run.companyId, run.id);
           await releaseEnvironmentLeasesForRun({
             runId: run.id,
             companyId: run.companyId,

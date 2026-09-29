@@ -104,6 +104,8 @@ Shell variables take precedence over the local file. The recognized names are:
 - `XAI_API_KEY` (local Grok API-key profile)
 - `GROK_AUTH_JSON` (local native Grok subscription profile)
 - `DAYTONA_API_KEY`
+- `CURSOR_AUTH_TOKEN` (extended Cursor candidate)
+- `COPILOT_GITHUB_TOKEN` (extended Copilot candidate)
 - `PAPERCLIP_E2E_DAYTONA_IMAGE` (Daytona only)
 
 The image must be an immutable `image@sha256:...` reference. The launcher
@@ -190,6 +192,30 @@ rendered, answered in the browser, and resumed once on the same task without
 duplicating the final response. The second workflow restarts the isolated
 Paperclip server while the interaction is waiting, reloads that state, and
 then resumes it. The suite has no Daytona cells.
+
+`instruction-persistence` is an explicit-only three-cell workflow: legacy and
+native Codex locally, plus native Codex on Daytona. Each creates six browser tasks
+for the same agent. The editor first creates a nested supporting file. The first
+run edits its registered AGENT_HOME using ordinary filesystem tools: instructions,
+nested text, editor-created content, and exact binary bytes. The oracle checks the
+current files, a stopped-run save receipt, and absence of newly appended history.
+The first task also publishes a small verification receipt for the normal
+completion contract; the personal files stay in the agent directory.
+After a Paperclip restart, a fresh task must upload a downloaded proof attachment
+containing independent saved nonces absent from its prompt. A third task edits its
+private copy while the browser edits the same current file. The later run sync
+must win for that changed file, preserve an unrelated board-created file, and
+produce no conflict candidate or manual review step. Exact bytes, downloads,
+and receipts are independently checked; model claims alone cannot pass.
+Three further tasks fill a sparse personal file to its 256 MiB limit, exceed
+that limit, and clean it up. Every run must still succeed; the run UI must show
+a warning while full and clear it after cleanup. Rejected bytes must not replace
+the saved file. This adds at most one 256 MiB saved fixture per isolated agent.
+The deadline is twenty minutes per cell, with six expected provider runs;
+normal instance/Daytona cleanup, screenshots, evidence, and billing apply. Run with
+`pnpm test:e2e:runner -- --suite instruction-persistence`. Managed agent directories
+checkpoint and close the provider before collection while retaining conversation
+state. The separate `daytona-warm-continuity` suite covers warm runtime behavior.
 
 `daytona-warm-continuity` (**Daytona Warm Continuity**) is exactly two paid
 cells: legacy Codex and Runner Codex against one reusable warm Daytona
@@ -423,6 +449,14 @@ the image job deliberately fails its anonymous-pull check otherwise. Existing
 content tags are never rebuilt or overwritten by the workflow.
 
 ### Match the local controller package to the Daytona image
+
+When the controller runs on macOS or another platform different from the sandbox,
+set `PAPERCLIP_RUNNER_REMOTE_BINARY_PATH` to a verified Linux amd64
+`paperclip-runnerd`, such as the binary copied from `/usr/local/bin/paperclip-runnerd`
+in the pinned image. The controller must have these exact bytes for its artifact
+identity check. A local macOS runner cannot substitute for the Linux binary,
+even when the sandbox image contains a compatible runner. This also applies to
+native Codex cells, which do not otherwise need the remote provider pack below.
 
 Native ACPX (including Claude) and OpenCode Daytona cells also require
 `PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH` on the controller. The package and
@@ -823,6 +857,26 @@ an unexecuted task after rejection is allowed. A completed onboarding parent
 without the approved child is graded as a behavior failure, not retried as an
 infrastructure timeout.
 
+The refusal checkpoint records the persisted user decision before waiting for
+the run to settle. A refusal that closes the task may end its responding run as
+cancelled; this is allowed only with the exact saved user decision, the matching
+issue/agent/comment wake, control-plane cancellation after the decision, a
+Cancelled task, and a persisted response attributed to that run. The waiter
+allows the response to arrive after cancellation. Missing responses, operator
+cleanup cancellations, provider errors, unauthorized outputs, and active runs
+still fail.
+The response check proves persistence and attribution. It does not grade the
+reply's wording; the saved task, output, and run state prove non-execution.
+
+An obsolete queued wake with `issue_terminal_status` is not a provider failure
+when `startedAt` is explicitly null and its issue is durably Done or Cancelled.
+All other run and outcome checks still apply. Run rows and billing are retained.
+Chat clarification accepts concrete information lists introduced by "I need:"
+without requiring a question mark, while work checklists, empty requests, and
+lost task ownership remain failures. These grading rules are versioned in each
+affected suite's definition metadata; they do not retroactively qualify aborted
+historical attempts.
+
 `question-choice-options` fails any recorded single-select or multi-select
 question with fewer than two distinct, nonempty options, including one-option
 "I'll describe it" forms. It checks every captured card presentation, including
@@ -1163,3 +1217,46 @@ missing events or a narrative completion cannot pass. Existing run, copyback,
 screenshot, billing and environment cleanup checks apply. Use
 `--id api-response-reading.runner-codex.daytona.saved-text-pages` with an
 immutable Daytona image; no private hooks or fixture database writes are used.
+
+## Extended ACP harnesses (explicit only)
+
+`--suite extended-harnesses` declares 30 Product E2E cells: Cursor, Copilot,
+and Pi on local and Daytona, each exercising authenticated completion,
+question/answer continuation, revision-bound semantic plan approval, restart
+with pending input, and file edit plus independent byte validation. The file
+case uses a public project workspace so Daytona copy-back is graded too.
+These are candidate definitions, not a claim of provider qualification. Native
+provider-specific questions, plan decisions, restrictive permissions and steering
+need their separate conformance/qualification evidence.
+
+```sh
+pnpm test:e2e:runner -- --list --suite extended-harnesses
+pnpm test:e2e:runner -- --id extended-harnesses.runner-acpx-pi.local.hello-complete
+```
+
+The suite is excluded from `--all`, and candidate cells never automatically
+retry. Select one cell first, reserve its spend and reconcile provider billing
+before another attempt. Existing subscriptions/credits and incremental cash
+charges are separate; unavailable receipts do not mean zero cost. The September
+28 qualification budget is $100 total including retries and Daytona resources:
+$25 per provider and $25 coordinated infrastructure/diagnosis.
+
+The launcher binds only the selected candidate and exact discovered model in
+`PAPERCLIP_RUNNER_ACPX_QUALIFICATION`, a JSON array of `{agent,model}` pairs.
+The server reads this operator environment at its normal runnerd construction
+boundary; agent config/environment cannot enable qualification. Normal hosts
+have no admission override. It does not bypass profile, executable, credential,
+company, tool or permission checks. Keep this variable confined to isolated
+qualification instances. Model catalog discovery alone does not prove inference
+entitlement; all three profiles remain pending until the required live evidence
+passes. Cursor and Copilot models are the explicit September 28 authenticated
+discovery choices; Pi imports its production profile's fixed OpenRouter model.
+
+Run each candidate from its provider branch, with its verified candidate assets
+materialized under the runner package, and build the TypeScript sidecar before
+local execution. Daytona additionally requires that branch's immutable Linux
+candidate image and the matching controller-owned provider pack described in
+[`docker/daytona-runner/README.md`](../../docker/daytona-runner/README.md).
+The separate Runner Evals `extended-harnesses` campaign lives in the private
+`paperclip-evals` repository and grades semantic protocol behavior against the
+mock control plane. Neither suite substitutes for the other.
