@@ -427,10 +427,11 @@ function BlockedInboxRowShowcase() {
         <p className="text-sm text-muted-foreground">
           <strong>Search parity.</strong> The inbox search box indexes exactly the tokens the row
           displays — title, identifier, owner, the specific reason, the variant shown in the group
-          header, the displayed action, and any leaf/recovery refs.{" "}
-          <code className="font-mono">action.detail</code> is no longer indexed, and a suppressed
-          action is not findable either; otherwise suppression would hide the text on screen while
-          leaving it reachable through the filter.
+          header, and the displayed action.{" "}
+          <code className="font-mono">action.detail</code> is no longer indexed, a suppressed
+          action is not findable either, and <code className="font-mono">leafIssue</code>/
+          <code className="font-mono">recoveryIssue</code> refs are not indexed because no render
+          path draws them; otherwise the filter would match on text the row does not show.
         </p>
       </div>
     </div>

@@ -347,6 +347,51 @@ describe("blockedInbox", () => {
       expect(tokens).not.toContain("SECRET_DETAIL_SENTINEL");
     });
 
+    it("does not index leaf/recovery refs the row never renders", () => {
+      // The property above was asserted in its name but not in its body: every
+      // fixture here defaults `leafIssue`/`recoveryIssue` to null, so nothing
+      // ever exercised a row that carried them. It did once -- these four
+      // tokens were indexed while no render path drew them, so a search for a
+      // leaf or recovery title matched a row showing none of it.
+      const row = buildBlockedInboxRows([
+        makeIssue(
+          { id: "p5", title: "Ship the batch" },
+          makeAttention({
+            reason: "blocked_chain_stalled",
+            action: { label: "Inspect blocker chain", detail: null },
+            leafIssue: {
+              id: "leaf-1",
+              identifier: "PAP-90001",
+              title: "Leaf sentinel title",
+              status: "todo",
+              priority: "medium",
+              assigneeAgentId: null,
+              assigneeUserId: null,
+            },
+            recoveryIssue: {
+              id: "rec-1",
+              identifier: "PAP-90002",
+              title: "Recovery sentinel title",
+              status: "todo",
+              priority: "medium",
+              assigneeAgentId: null,
+              assigneeUserId: null,
+            },
+          }),
+        ),
+      ])[0]!;
+      const tokens = blockedRowSearchTokens(row).join(" ");
+      expect(tokens).not.toContain("PAP-90001");
+      expect(tokens).not.toContain("Leaf sentinel title");
+      expect(tokens).not.toContain("PAP-90002");
+      expect(tokens).not.toContain("Recovery sentinel title");
+      expect(blockedRowMatchesSearch(row, "Leaf sentinel title")).toBe(false);
+      expect(blockedRowMatchesSearch(row, "Recovery sentinel title")).toBe(false);
+      // The row's own identity is still indexed -- the drop is scoped to the
+      // refs, not to search in general.
+      expect(blockedRowMatchesSearch(row, "Ship the batch")).toBe(true);
+    });
+
     it("indexes the specific reason and the group label, and not a suppressed action", () => {
       const row = buildBlockedInboxRows([
         makeIssue(

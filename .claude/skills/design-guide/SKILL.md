@@ -153,7 +153,7 @@ Live census, 2026-09-28, `GET /api/companies/{id}/issues?status=blocked&includeB
 
 Because the rule is a label allowlist, all three lift it with no code change. A rule written as "hide the action when reason is `blocked_chain_stalled`" would have silently swallowed all three.
 
-**Search parity.** `blockedRowSearchTokens()` indexes exactly what the row displays: title, identifier, owner, the specific reason, the variant shown in the group header, the displayed action, and leaf/recovery refs. `action.detail` is not indexed, and a suppressed action is not findable either. Never let the search box index text the row does not show — a filter that matches on hidden strings is a lie about the result.
+**Search parity.** `blockedRowSearchTokens()` indexes exactly what the row displays: title, identifier, owner, the specific reason, the variant shown in the group header, and the displayed action. `action.detail` is not indexed, and a suppressed action is not findable either. `leafIssue`/`recoveryIssue` refs are also **not** indexed: no render path draws them — the row has no blocker-chain or linked-blocker content, and the server's `leafIssue` is the last issue in `finding.dependencyPath`, which is a *different* issue from the row. Re-add them only in the same change that renders them. Never let the search box index text the row does not show — a filter that matches on hidden strings is a lie about the result.
 
 Showcase: `ui/src/pages/DesignGuide.tsx` → "Blocked Inbox reason and action (K-20108)". Tests: `ui/src/lib/blockedInbox.test.ts`, `ui/src/components/BlockedReasonChip.test.tsx`, `ui/src/components/BlockedInboxView.test.tsx`.
 

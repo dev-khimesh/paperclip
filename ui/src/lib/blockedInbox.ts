@@ -277,10 +277,16 @@ export function groupBlockedInboxRows(
  *
  * Every token below is now rendered somewhere on the row: `reasonLabel` by the
  * reason chip, `actionLabel` beneath it, `variant` by the group header the row
- * is bucketed under, and the owner/leaf/recovery refs by the row's identity and
- * linked blockers. `actionLabel` goes through `blockedRowActionLabel` so a
- * suppressed action is not searchable either — otherwise the suppression would
- * hide the text on screen while leaving it findable.
+ * is bucketed under, and the title/identifier/owner by the row's identity.
+ * `actionLabel` goes through `blockedRowActionLabel` so a suppressed action is
+ * not searchable either — otherwise the suppression would hide the text on
+ * screen while leaving it findable.
+ *
+ * `attention.leafIssue` and `attention.recoveryIssue` are deliberately absent.
+ * No render path draws them — `BlockedInboxView` has no blocker-chain or
+ * linked-blocker row content — so indexing them let a search match a leaf or
+ * recovery title the row never showed, the same defect class as `action.detail`.
+ * Re-add them only in the same change that renders them.
  */
 export function blockedRowSearchTokens(row: BlockedInboxIssueRow): string[] {
   const attention = row.attention;
@@ -291,10 +297,6 @@ export function blockedRowSearchTokens(row: BlockedInboxIssueRow): string[] {
     blockedRowActionLabel(attention) ?? "",
     row.reasonLabel,
     blockedVariantLabel(row.variant),
-    attention.leafIssue?.identifier ?? "",
-    attention.leafIssue?.title ?? "",
-    attention.recoveryIssue?.identifier ?? "",
-    attention.recoveryIssue?.title ?? "",
   ];
 }
 
