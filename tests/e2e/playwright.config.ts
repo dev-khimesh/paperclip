@@ -1,4 +1,3 @@
-// Trace fix: retain-on-failure for K-19987 PR #14354
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
