@@ -1,5 +1,7 @@
 // @vitest-environment node
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type {
   Issue,
@@ -9,6 +11,7 @@ import type {
 } from "@paperclipai/shared";
 import {
   BLOCKED_REASON_VARIANT_ORDER,
+  BLOCKED_ROW_SEARCH_SLOTS,
   blockedBadgeTone,
   blockedReasonLabel,
   blockedReasonVariant,
@@ -24,6 +27,7 @@ import {
   groupBlockedInboxRows,
   sortBlockedInboxRows,
   type BlockedInboxIssueRow,
+  type BlockedRowSearchSlot,
 } from "./blockedInbox";
 
 function makeAttention(
@@ -566,6 +570,73 @@ describe("blockedInbox", () => {
       expect(blockedRowMatchesSearch(row, "Parked blocker")).toBe(true);
       expect(blockedReasonLabel(row.attention.reason)).toBe("Parked blocker");
       expect(blockedRowActionLabel(row.attention)).toBe("Resume parked blocker");
+    });
+  });
+
+  describe("search-parity guard (K-20207)", () => {
+    // The design guide claims it "cannot drift" from the function it documents.
+    // These two tests are what make that true. Before them the search-parity
+    // sentence existed in four mutually incompatible forms, two of them in
+    // consecutive commits of the same open PR.
+
+    it("emits exactly the declared slots, in the declared order", () => {
+      // Every slot carries a distinguishable sentinel, so a slot that stops
+      // being emitted and a slot emitted twice are both visible in one read.
+      // Grouping is on and the owner is resolved: the configuration in which
+      // all six slots can be non-empty at once.
+      const row = buildBlockedInboxRows([
+        makeIssue(
+          { id: "g1", title: "TITLE_SENTINEL", identifier: "PAP-1" },
+          makeAttention({
+            reason: "pending_board_decision",
+            action: { label: "ACTION_SENTINEL", detail: null },
+          }),
+        ),
+      ])[0]!;
+      expect(blockedRowSearchTokens(row, { groupLabel: "GROUP_SENTINEL", ownerLabel: "OWNER_SENTINEL" }))
+        .toEqual([
+          "TITLE_SENTINEL",
+          "PAP-1",
+          "OWNER_SENTINEL",
+          "ACTION_SENTINEL",
+          row.reasonLabel,
+          "GROUP_SENTINEL",
+        ]);
+    });
+
+    it("names every declared slot in the design guide's parity sentence", () => {
+      // One direction, over structured data. A token the function returns and
+      // the document does not name is the direction that shipped: the
+      // leaf/recovery refs stayed indexed and visible to the guide's own
+      // claim for the entire life of the bug. The other direction -- a
+      // documented token the function stopped returning -- is asserted by the
+      // absence tests above, which is where a negative claim belongs.
+      const guide = readFileSync(
+        fileURLToPath(new URL("../../../.claude/skills/design-guide/SKILL.md", import.meta.url)),
+        "utf8",
+      );
+      const parity = guide
+        .split("\n")
+        .find((line) => line.startsWith("**Search parity.**"));
+      expect(parity, "the design guide's '**Search parity.**' sentence is gone").toBeDefined();
+      // The sentence names each slot by its source field, not by slot id, so
+      // the guide stays readable prose. Both spellings are accepted: a
+      // reword that drops one of them fails the guard and gets a human look.
+      const spelled: Record<BlockedRowSearchSlot, readonly string[]> = {
+        title: ["title"],
+        identifier: ["identifier"],
+        ownerLabel: ["owner"],
+        actionLabel: ["action"],
+        reasonLabel: ["reason"],
+        groupLabel: ["variant", "group"],
+      };
+      const missing = BLOCKED_ROW_SEARCH_SLOTS.filter((slot) =>
+        spelled[slot].every((needle) => !parity!.includes(needle)),
+      );
+      expect(
+        missing,
+        `design guide's search-parity sentence no longer names: ${missing.join(", ")}`,
+      ).toEqual([]);
     });
   });
 });
