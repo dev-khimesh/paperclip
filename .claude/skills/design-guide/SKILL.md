@@ -144,7 +144,7 @@ Live census, 2026-09-28T19:26Z, `GET /api/companies/{id}/issues?status=blocked&i
 | `Assign blocker` | 1 | 0/1 | 1 | yes |
 | `Resume parked blocker` | 1 | 0/1 | 1 | yes |
 
-**Read the two degenerate columns, not the row counts.** The totals drift — the same board read 76 attended rows on one pass, 67 on the next, 60 on the last. The degeneracy does not: on all 51 stalled rows simultaneously, `leafIssue` is null, `recoveryIssue` is null, `owner.type` is `"unknown"`, and the detail string is one byte-identical string. Those are properties of the server branch, so they hold at any queue depth. `Assign blocker` → K-20119 and `Resume parked blocker` → K-20035 name real leaves, which is why they render and the fallback does not.
+**Read the two degenerate columns, not the row counts.** The totals drift — the same board read 76 attended rows on one pass, 67 on the next, 60 on the last. The degeneracy does not: on all 51 stalled rows simultaneously, `leafIssue` is null, `recoveryIssue` is null, `owner.type` is `"unknown"`, and the detail string is one byte-identical string. Those are properties of the server branch, so they hold at any queue depth. `Assign blocker` → K-20119 and `Resume parked blocker` → K-20035 also carry a non-null `leafIssue`, but that is **not** why they render: neither label is in the fallback set, so they return at the first check and never reach the leaf test. Naming a leaf only matters to a row still wearing a fallback label — condition 2 exists to rescue a *stalled* row that acquires a leaf, not to explain the two specific rows.
 
 `Inspect blocker chain` is the `blocked_chain_stalled` fallback branch of the attention build (`server/src/services/issues.ts`, ~L6391): it fires when no leaf produced a specific finding. It is dropped for two independent reasons — it names no target, and the rows already sit under a group header reading "Blocked chain stalled", so rendering it adds ~51 lines of noise and zero information.
 
@@ -152,7 +152,7 @@ Live census, 2026-09-28T19:26Z, `GET /api/companies/{id}/issues?status=blocked&i
 
 1. the label stops being a known fallback — e.g. it becomes `Unblock K-20015 by removing done blocker K-20016`;
 2. `leafIssue` becomes non-null on a stalled row (0 of 51 today) — the row now names a target;
-3. the detail stops being the canonical stall string (1 distinct string today), so the row carries something the label alone does not.
+3. the detail stops being the canonical stall string **and is present** (1 distinct string today), so the row carries something the label alone does not. An *absent* detail does not re-open the action — the check requires a detail that differs, so only an empty detail falls through with the fallback.
 
 A rule written as "hide the action when the reason is `blocked_chain_stalled`" would have silently swallowed all three. So would a label-only allowlist that ignored conditions 2 and 3 — which is why the function tests all three, and why the guide and the function must be changed together.
 

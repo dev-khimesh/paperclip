@@ -439,8 +439,9 @@ function BlockedInboxRowShowcase() {
           <code className="font-mono">&quot;unknown&quot;</code>, and the detail string is one
           byte-identical string. Those are properties of the server branch, so they hold at any
           queue depth. <code className="font-mono">Assign blocker</code> names a real leaf (PAP-20119)
-          and <code className="font-mono">Resume parked blocker</code> names another (PAP-20035) —
-          which is why they render and the fallback does not.
+          and <code className="font-mono">Resume parked blocker</code> names another (PAP-20035), but
+          that is not why they render: neither label is in the fallback set, so they return at the
+          first check. The leaf test only matters to a row still wearing a fallback label.
         </p>
         <p className="text-sm text-muted-foreground">
           The fallback is dropped for two independent reasons. It names no target, so{" "}
@@ -464,8 +465,9 @@ function BlockedInboxRowShowcase() {
             today) — the second showcase row above, or
           </li>
           <li>
-            the detail stops being the canonical stall string (1 distinct string today), so the row
-            carries something the label alone does not.
+            the detail stops being the canonical stall string <em>and is present</em> (1 distinct
+            string today), so the row carries something the label alone does not. An absent detail
+            does not re-open the action.
           </li>
         </ul>
         <p className="text-sm text-muted-foreground">
