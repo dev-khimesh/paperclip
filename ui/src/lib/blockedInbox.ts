@@ -340,19 +340,59 @@ export interface BlockedRowSearchContext {
   ownerLabel?: string | null;
 }
 
+export type BlockedRowSearchSlot =
+  | "title"
+  | "identifier"
+  | "ownerLabel"
+  | "actionLabel"
+  | "reasonLabel"
+  | "groupLabel";
+
+/**
+ * The search-parity contract as data (K-20207).
+ *
+ * The design guide states that `blockedRowSearchTokens` indexes exactly what the
+ * row displays, and that the document "cannot drift from the function". Nothing
+ * enforced that: the same sentence existed in four mutually incompatible forms,
+ * two of them in consecutive commits of one open PR, and a fifth was found
+ * uncommitted on a shared tree. This table is the single declaration both the
+ * function and the documentation are checked against.
+ *
+ * Declared as slots, not literals, on purpose. `ownerLabel` and `groupLabel` are
+ * resolved by the caller (see `BlockedRowSearchContext`), so their *values* are
+ * not knowable here — only the fact that the row draws them. A guard that
+ * asserted literal strings would have to re-derive the caller's resolution and
+ * would fail on every legitimate configuration change.
+ *
+ * Deliberately absent: `leafIssue` / `recoveryIssue` (no render path draws
+ * them) and `action.detail` (never rendered). Both absences are load-bearing and
+ * are asserted by tests, not merely by omission from this list.
+ */
+export const BLOCKED_ROW_SEARCH_SLOTS: readonly BlockedRowSearchSlot[] = [
+  "title",
+  "identifier",
+  "ownerLabel",
+  "actionLabel",
+  "reasonLabel",
+  "groupLabel",
+];
+
 export function blockedRowSearchTokens(
   row: BlockedInboxIssueRow,
   context: BlockedRowSearchContext = {},
 ): string[] {
   const attention = row.attention;
-  return [
-    row.issue.title,
-    row.issue.identifier ?? "",
-    context.ownerLabel ?? attention.owner.label ?? "",
-    blockedRowActionLabel(attention) ?? "",
-    row.reasonLabel,
-    context.groupLabel ?? "",
-  ].filter((token) => token.length > 0);
+  const bySlot: Record<BlockedRowSearchSlot, string> = {
+    title: row.issue.title,
+    identifier: row.issue.identifier ?? "",
+    ownerLabel: context.ownerLabel ?? attention.owner.label ?? "",
+    actionLabel: blockedRowActionLabel(attention) ?? "",
+    reasonLabel: row.reasonLabel,
+    groupLabel: context.groupLabel ?? "",
+  };
+  return BLOCKED_ROW_SEARCH_SLOTS.map((slot) => bySlot[slot]).filter(
+    (token) => token.length > 0,
+  );
 }
 
 export function blockedRowMatchesSearch(
