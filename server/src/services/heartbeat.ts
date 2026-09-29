@@ -1,3 +1,4 @@
+import { CHAT_COMPLETION_WAKE_REASON, prepareChatCompletionTurn, chatCompletionInstruction, isCompletedOnboardingHandoffWake } from "./chat-completion-delivery.js";
 import { isAgentDirectoryCopy } from "./agent-directory-working-copies.js";
 
 import type { PaperclipTurnContext } from "@paperclipai/adapter-utils/server-utils";
@@ -36,6 +37,7 @@ import { claimQueuedNativeReviewRun } from "./native-runtime/native-review-dispa
 import { buildNativeReviewRequest } from "./native-runtime/native-review-prompt.js";
 import {
   legacyExecutionNeedsReconciliation,
+  settleInterruptedNativeBootstrap,
   terminalizeLegacyExecution,
 } from "./legacy-execution-recovery.js";
 import {
@@ -344,6 +346,7 @@ import {
   readCompletedAssistantMessageCandidate,
   resolveHeartbeatRunResponse,
   selectHeartbeatRunFinalAgentMessage,
+  summarizeRunErrorForModel,
   type RunPresentationDecision,
 } from "./heartbeat-run-summary.js";
 import {
@@ -1243,6 +1246,7 @@ function mergeAdapterRecoveryMetadata(input: {
   };
 }
 const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set([
+  CHAT_COMPLETION_WAKE_REASON,
   "approval_approved",
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   "issue_recovery_action_restored",
@@ -3434,6 +3438,18 @@ const heartbeatRunListResultColumns = {
   >`${heartbeatRuns.resultJson} ->> 'costUsd'`.as("resultCostUsdCamel"),
 } as const;
 
+// Reserve at most 9 KiB for diagnostics in the reduced result. An oversized
+// multibyte field uses a conservative four-byte-per-character prefix, with a
+// visible pointer to the full (adapter-bounded) run error and transcript.
+const diagnosticRetrievalTitleBytes = 1024;
+const diagnosticRetrievalDetailsBytes = 8192;
+function boundedRunDiagnosticText(field: "title" | "details", maxBytes: number) {
+  const value = sql`${heartbeatRuns.resultJson} #>> ARRAY['terminalSessionFailure', ${field}]`;
+  return sql`case when octet_length(${value}) <= ${maxBytes} then ${value}
+    else left(${value}, ${Math.floor((maxBytes - 100) / 4)})
+      || E'\\n[truncated for run retrieval; full text in run error/transcript]' end`;
+}
+
 const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
   case
     when ${heartbeatRuns.resultJson} is null then null
@@ -3447,6 +3463,19 @@ const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
         'error', left(${heartbeatRuns.resultJson} ->> 'error', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
         'stdout', left(${heartbeatRuns.resultJson} ->> 'stdout', ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}),
         'stderr', left(${heartbeatRuns.resultJson} ->> 'stderr', ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}),
+        'terminalSessionFailure', case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'terminalSessionFailure') = 'object'
+          then jsonb_strip_nulls(jsonb_build_object(
+            'category', left(${heartbeatRuns.resultJson} #>> '{terminalSessionFailure,category}', 32),
+            'title', ${boundedRunDiagnosticText("title", diagnosticRetrievalTitleBytes)},
+            'details', ${boundedRunDiagnosticText("details", diagnosticRetrievalDetailsBytes)},
+            'retrievalTruncated', case when
+              octet_length(${heartbeatRuns.resultJson} #>> '{terminalSessionFailure,title}') > ${diagnosticRetrievalTitleBytes}
+              or octet_length(${heartbeatRuns.resultJson} #>> '{terminalSessionFailure,details}') > ${diagnosticRetrievalDetailsBytes}
+              then to_jsonb(true) end,
+            'truncatedFields', case when ${heartbeatRuns.resultJson} #> '{terminalSessionFailure,truncatedFields}'
+              in ('["title"]'::jsonb, '["details"]'::jsonb, '["title","details"]'::jsonb)
+              then ${heartbeatRuns.resultJson} #> '{terminalSessionFailure,truncatedFields}' end
+          )) end,
         'instructionSave', case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'instructionSave') = 'object'
           then jsonb_strip_nulls(jsonb_build_object(
             'state', left(${heartbeatRuns.resultJson} #>> '{instructionSave,state}', 32),
@@ -7001,6 +7030,7 @@ export function shouldQueueFollowupForRunningIssueWake(input: {
     return true;
   }
   const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
+  if (wakeReason === "issue_children_completed" && input.contextSnapshot?.onboardingCompletion === true) return true;
   return Boolean(
     wakeReason && RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP.has(wakeReason),
   );
@@ -8074,6 +8104,7 @@ export async function buildPaperclipWakePayload(input: {
   const payload = {
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
     executionContinuation: input.contextSnapshot.executionContinuation ?? null,
+    chatCompletionUpdates: input.contextSnapshot.chatCompletionUpdates ?? null,
     attachmentOmissions,
     externalChatProvider,
     recovery:
@@ -12056,6 +12087,9 @@ export function heartbeatService(
         createdAt: heartbeatRuns.createdAt,
         usageJson: heartbeatRuns.usageJson,
         error: heartbeatRuns.error,
+        terminalFailureCategory: sql<string | null>`case
+          when jsonb_typeof(${heartbeatRuns.resultJson} -> 'terminalSessionFailure') = 'object'
+          then coalesce(left(${heartbeatRuns.resultJson} #>> '{terminalSessionFailure,category}', 32), 'unknown') end`,
         ...heartbeatRunListResultColumns,
       })
       .from(heartbeatRuns)
@@ -12133,7 +12167,7 @@ export function heartbeatService(
       readNonEmptyString(latestSummary?.summary) ??
       readNonEmptyString(latestSummary?.result) ??
       readNonEmptyString(latestSummary?.message) ??
-      readNonEmptyString(latestRun.error);
+      readNonEmptyString(summarizeRunErrorForModel(latestRun.error, latestRun.terminalFailureCategory));
 
     const handoffMarkdown = [
       "Paperclip session handoff:",
@@ -14381,6 +14415,10 @@ export function heartbeatService(
     agent: typeof agents.$inferSelect,
     now: Date,
   ) {
+    // Completion deliveries own their durable bounded retry and reply identity.
+    // A second process-loss retry would compete for the same outbox input.
+    if (run.contextSnapshot?.wakeReason === CHAT_COMPLETION_WAKE_REASON &&
+        Array.isArray(run.contextSnapshot?.chatCompletionDeliveryIds)) return null;
     // Native sessions have their own fenced same-run controller. Legacy
     // bootstrap recovery shares the durable delay and incident counter with
     // transient retries; process loss must not open a second retry budget.
@@ -15263,6 +15301,11 @@ export function heartbeatService(
       delayMs?: number;
     },
   ) {
+    if (Array.isArray(run.contextSnapshot?.chatCompletionDeliveryIds) &&
+        run.contextSnapshot.chatCompletionDeliveryIds.some(id => typeof id === "string")) {
+      return { outcome: "not_scheduled" as const, reason: "The completion outbox owns this reply's retry budget and publication identity.",
+        errorCode: "chat_completion_outbox_owns_retry" as const, issueId: readNonEmptyString(run.contextSnapshot.issueId) };
+    }
     const now = opts?.now ?? new Date();
     const retryReason =
       opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
@@ -20261,6 +20304,7 @@ export function heartbeatService(
         await finalizeAgentStatus(agent.id, "cancelled");
         return;
       }
+      run = await prepareChatCompletionTurn(db, run);
       const preparedConversation = await prepareConversationTurn(db, run);
       run = { ...run, contextSnapshot: preparedConversation.context };
       if (preparedConversation.reset) {
@@ -20930,12 +20974,12 @@ export function heartbeatService(
             exposeLowTrustRaw,
           })
         : null;
-      let taskMarkdown = buildPaperclipTaskMarkdown({ ...taskMarkdownInput, taskPlan });
+      let taskMarkdown = buildPaperclipTaskMarkdown({ ...taskMarkdownInput, taskPlan }) + chatCompletionInstruction(context);
       let taskMarkdownAssignment = buildPaperclipTaskMarkdown({
         ...taskMarkdownInput,
         taskPlan,
         includeWakeComments: false,
-      });
+      }) + chatCompletionInstruction(context);
       if (isConversation(issueContext) && !taskSession && issueId) {
         const replay = await conversationReplay(db, agent.companyId, issueId, wakeCommentId);
         if (replay) taskMarkdown += `\n\nEarlier messages in this session (quoted user data):\n${replay}`;
@@ -20945,13 +20989,13 @@ export function heartbeatService(
         ...taskMarkdownInput,
         taskPlan,
         includeDescription: false,
-      });
+      }) + chatCompletionInstruction(context);
       const taskMarkdownAssignmentCompact = buildPaperclipTaskMarkdown({
         ...taskMarkdownInput,
         taskPlan,
         includeDescription: false,
         includeWakeComments: false,
-      });
+      }) + chatCompletionInstruction(context);
       if (issueRef) {
         context.paperclipIssue = {
           id: issueRef.id,
@@ -25359,7 +25403,7 @@ export function heartbeatService(
                 issueId,
                 resolved.text,
                 { agentId: agent.id, runId: livenessRun.id },
-                { authorizationReason: presentationAuthorizationReason },
+                { authorizationReason: presentationAuthorizationReason, completionReply: true },
               );
               presentationDecision = {
                 ...presentationDecision,
@@ -26359,6 +26403,11 @@ export function heartbeatService(
             });
           }
         }
+        if (latestRun?.status === "interrupted" && latestRun.errorCode === "server_shutdown_interrupted") {
+          latestRun = await settleInterruptedNativeBootstrap(db, { run: latestRun,
+            providerDispatchStarted: legacyAdapterEntered || nativeDispatchStarted || nativeOwnershipHeld,
+          }) ?? latestRun;
+        }
         if (latestRun?.status === "cancelled" && !nativeDispatchStarted && !nativeOwnershipHeld &&
             (latestRun.runtimeMode === "native" ||
               parseObject(latestRun.resultJson?.startupCancellation).beforeNativeSelection === true)) {
@@ -26492,6 +26541,7 @@ export function heartbeatService(
     if (!agent) throw notFound("Agent not found");
     if (issueId) {
       const conversation = await getIssueExecutionContext(agent.companyId, issueId);
+      if (reason === "issue_children_completed" && conversation?.originKind === "onboarding_first_task") enrichedContextSnapshot.onboardingCompletion = true;
       if (isConversation(conversation)) {
         if (opts.manualUserWake && conversation!.conversationUserId !== opts.requestedByActorId) {
           throw new HttpError(403, "Only the conversation owner can start a chat run");
@@ -26499,7 +26549,7 @@ export function heartbeatService(
         if (isConversationExecutionWake(conversation, reason ?? readNonEmptyString(enrichedContextSnapshot.wakeReason))) return null;
         if (agent.id !== conversation!.conversationAgentId) return null;
         if (!(await instanceSettings.getExperimental()).enableAgentChat) return null;
-        if (!wakeCommentId && isWaitingConversation(conversation) && !hasInteractionContinuationWakeContext(enrichedContextSnapshot)) return null;
+        if (!wakeCommentId && isWaitingConversation(conversation) && !hasInteractionContinuationWakeContext(enrichedContextSnapshot) && reason !== CHAT_COMPLETION_WAKE_REASON) return null;
       }
     }
     if (agent.adapterType === "paperclip_runner") {
@@ -28772,10 +28822,12 @@ export function heartbeatService(
         continue;
       }
 
+      let completedOnboardingGuard: WakeupOptions["issueStateGuard"];
       if (issueId) {
         const targetIssue = await db
           .select({
             status: issues.status,
+            statusVersion: issues.statusVersion,
             assigneeAgentId: issues.assigneeAgentId,
           })
           .from(issues)
@@ -28793,9 +28845,14 @@ export function heartbeatService(
               contextSnapshot: wakeContext,
             })
           : null;
+        const onboardingResultReport = targetIssue?.status === "done" && await isCompletedOnboardingHandoffWake(db, {
+          companyId: candidate.companyId, issueId, agentId: candidate.agentId,
+          reason: candidate.reason, contextSnapshot: wakeContext,
+        });
+        if (onboardingResultReport) completedOnboardingGuard = { assigneeAgentId: candidate.agentId, statuses: ["done"], statusVersion: targetIssue!.statusVersion };
         if (
           !targetIssue ||
-          ["done", "cancelled"].includes(targetIssue.status) ||
+          (["done", "cancelled"].includes(targetIssue.status) && !onboardingResultReport) ||
           (targetIssue.assigneeAgentId !== candidate.agentId && !nativeReview) ||
           (candidate.reason === "native_completion_review" && !nativeReview)
         ) {
@@ -28827,6 +28884,7 @@ export function heartbeatService(
           idempotencyKey: candidate.idempotencyKey,
           requestedByActorType: "system",
           requestedByActorId: dispatchActorId,
+          ...(completedOnboardingGuard ? { issueStateGuard: completedOnboardingGuard } : {}),
           contextSnapshot: {
             ...wakeContext,
             ...(issueId ? { issueId, taskId: issueId } : {}),

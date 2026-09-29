@@ -35,14 +35,14 @@ Paperclip task, run an agent, or replace a Product E2E result.
 
 ## Completion-update probes (explicit only)
 
-`--suite completion-updates` selects four local Product E2E cells: native Codex
-and native Claude, each with `interview-plan-accept` and
-`handoff-completion-idle`. This suite adds evidence and assertions only; it does
-not enable completion wakeups, change production prompts, or prescribe a
-system-generated notice. The onboarding cell reuses the real wizard and its
-existing pre-execution native runtime switch, retaining the production persona.
+`--suite completion-updates` selects ten local Product E2E cells: native Codex
+and native Claude, each with onboarding, idle handoff, busy handoff, two-task
+handoff, and restart recovery. These exercise the production completion-delivery
+path and agent-authored responses. There is no separate completion feature flag.
+The onboarding cell reuses the real wizard and its existing pre-execution native
+runtime switch, retaining the production persona.
 
-The chat cell asks the agent to delegate one welcome note to a named worker and
+The idle chat cell asks the agent to delegate one welcome note to a named worker and
 report its result without another user message. A bounded local file read in
 the managed project workspace delays completion until the source chat is positively
 observed idle, with a three-minute handoff setup budget and a four-minute worker
@@ -53,8 +53,7 @@ so a content mismatch cannot suppress the communication evidence.
 The source thread is observed for 120 seconds. The probe retains a later
 correction even if an earlier reply already passes delivery and access. A later
 clarification does not erase an earlier accessible delivery.
-This proves the **after-idle** boundary, not completion during an active chat
-turn. The existing onboarding cell records its naturally occurring timing.
+The busy cell holds a separate source reply open until the worker finishes; the multiple cell delegates two notes and requires one completion per task. The restart cell holds the source provider at a fixture reference gate, then restarts the server after durable Done but before publication and releases the gate. The gate makes the interruption boundary observable and prevents a fast successful reply from racing the restart assertion. The onboarding cell records its naturally occurring timing.
 
 The mechanical oracle requires a run-attributed source reply after durable
 completion, plus the actual saved output or a navigable task/output link.
@@ -64,7 +63,9 @@ and reads its saved output through the public API. Known request markers, identi
 successful runs without Done, user-authored replies,
 and replies on the worker task do not satisfy it. Extra tasks and modified
 worker output are rejected by the chat story. Provider turns are bounded by
-the existing first-task limit (12) and chat limit (2–4).
+the existing first-task limit (12) and case-specific chat limits (2–7).
+
+A source reply counts as completion delivery only when its run received server-recorded Done facts for that specific task. A late initial handoff reply with a valid task link cannot substitute for the missing callback.
 
 **Mechanical passage is not answer-quality qualification.** Inspect
 `completion-update.json`, its `latestResponse`, and all retained replies against the included semantic
@@ -73,12 +74,28 @@ and no invented verification or follow-up work. A stale promise with a valid
 link can pass delivery/access while failing this separate review. Do not
 replace this distinction with keyword matching for “done.”
 
+When `OPENAI_API_KEY` is configured, the suite automatically uses the pinned semantic judge, reserves at most $0.50 per request, and includes its measured usage and any unknown spend in campaign billing. The Codex idle case also checks accurate, stale, unsupported, corrected, duplicate, redundant-acknowledgement, distinct-task, pending-then-joint, joint-then-repeated, supported-content-check, unsupported-content-check, rendered-task-link, unlinked-status-only, completion-then-result, completion-then-result-then-repeat, and recap-with-new-result control replies (up to seventeen requests); other cases judge only their recorded task results. The trusted workflow currently supplies only each cell’s provider key, so Claude cells retain their probe for separate grading and explicitly mark accuracy unqualified. Do not interpret a green mechanical campaign as semantic qualification until those retained probes are judged. Mechanical evidence remains separate from the accuracy verdict.
+
+To judge an older retained probe separately:
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/completion-judge.ts --evidence /path/to/completion-update.json --max-dollars 0.50 --approve-external-judge yes
+```
+
+The multi-task fixture records the other explicitly delegated task and its saved output as related ground truth, so a joint reply is checked against both real results. Company boundaries and document ownership are validated; unrelated tasks are never added to the judge input.
+
+The busy-chat case holds the real source conversation's document-save response after commit, using the existing isolated-server transport gate. It arms only that conversation, verifies the committed document and active source run, waits for the worker's real Done transition and public deferred-wake receipt, then releases the tool response. This avoids depending on a provider keeping a shell job in the foreground. The production server and task outcomes are unchanged by the fixture.
+
+Grader v14 inventories the completed tasks referenced by each reply, including implicit acknowledgements, plus the tasks whose results each reply links to or substantively presents, with a rationale and any earlier reply it genuinely corrects. Code checks that complete, chronological inventory for repeats: a later reply may recap a task if it adds another newly reported task, supplies the first access to an already announced result, or corrects an earlier claim. Browser-observed links are included in the evidence, so an automatically linked task identifier counts as result access. Foreign-task links and links from another reply do not. A status-only announcement followed by its result link is useful; repeating that link afterward is redundant. Paraphrased repeats and extra acknowledgements without new results fail. The retained inventory makes each duplicate finding inspectable; controls cover pending-then-joint updates, joint-then-repeated updates, and explicit corrections. Corrected statements replace the earlier statements when grading accuracy and access. It receives the synthetic user request and released brief (onboarding requirements come from the actual submitted user comments and resolved form answers, with their evidence IDs), so claims of checking visible content can be compared with the actual requirements; external-action claims still require evidence. This semantic check supplements the mechanical check for duplicate persisted replies from the same delivery.
+
+The standalone command requires explicit approval to send sanitized fixture evidence to OpenAI. The request omits task titles, planning documents, unrelated comments/documents, and run metadata; it redacts loaded credentials, credential-shaped text, email addresses, and phone numbers before hashing and transmission. It requires `OPENAI_API_KEY`, reserves the bounded cost before a single request, and writes an exclusive `.quality.json` sidecar containing rubric/evidence hashes and usage. The judge gives its reasoning and citations before the verdict; the response schema restricts references to the provided evidence IDs; invalid verdicts remain failures and retain a redacted `rejectedVerdict` for diagnosis. It never changes the original mechanical result. An unavailable or miscalibrated judge leaves semantic qualification incomplete and is classified as evaluation infrastructure failure rather than product failure.
+
 `completion-update-boundary.json`, worker output, source comments, per-run
 event evidence, and marked screenshots retain the chronology for diagnosis.
 Source SHA, suite digest, models, attempts, cleanup and partial billing remain
 in the normal result/report pipeline. A missing follow-up after a completed
 worker is a behavior failure; a failure before that boundary is not proof of
-the communication defect. Use the standard dashboard to compare the four cells.
+the communication defect. Use the standard dashboard to compare the ten cells.
 
 ```sh
 pnpm test:e2e:runner -- --list --suite completion-updates

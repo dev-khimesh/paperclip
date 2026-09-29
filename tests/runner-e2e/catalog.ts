@@ -1189,18 +1189,19 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude"].includes(profile.id))
       .map(profile => productionStoryProfile(defaultPermissionProfile(profile))),
     environments: [localEnvironment], tasks: chatQualificationTasks, expectedMatrixSize: 6,
-    definitionMetadata: { version: 9, permissions: "production-defaults", instructions: "production", crashBoundary: "verified-native-worker-pid-at-file-wait", recovery: "new-user-message-after-verified-cleanup", answerGrading: "exact-grounded-propositions-plus-separate-semantic-review", scheduling: "explicit-only" },
+    definitionMetadata: { version: 10, instructionSetup: "read-before-write-base-hash", permissions: "production-defaults", instructions: "production", crashBoundary: "verified-native-worker-pid-at-file-wait", recovery: "new-user-message-after-verified-cleanup", answerGrading: "exact-grounded-propositions-plus-separate-semantic-review", scheduling: "explicit-only" },
   },
   {
     id: "completion-updates", label: "Delegated Completion Updates", manualOnly: true,
-    description: "Observe completion delivery and result access in onboarding and idle Agent Chat; prose requires separate semantic review.",
+    description: "Qualify completion delivery in onboarding and idle, busy, multiple-task, and restart Agent Chat handoffs.",
     groups: ["chat", "native"],
     profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude"].includes(profile.id))
       .map(profile => productionStoryProfile(defaultPermissionProfile(profile))),
     environments: [localEnvironment],
     tasks: [...firstTaskTasks.filter(task => task.id === "interview-plan-accept"), ...chatCompletionTasks],
-    expectedMatrixSize: 4,
-    definitionMetadata: { version: 7, runGrading: "evidenced-nonexecution-and-refusal", instructions: "production", idleBoundaryTimeoutMs: 180_000, workerBriefTimeoutMs: 240_000, workerBriefWorkspace: "managed-project", workerBriefEvidence: "released-start-time", grading: "post-completion-reply-and-result-access", semanticReview: "required-separately", chatBoundary: "worker-gated-until-source-idle", observationWindowMs: 120_000, scheduling: "explicit-only" },
+    expectedMatrixSize: 10,
+    definitionMetadata: { version: 27, runGrading: "evidenced-nonexecution-and-refusal", resultNavigation: "loaded-task-header", instructionSetup: "read-before-write-base-hash", requirementEvidence: "recorded-user-comments-and-resolved-answers", busyReferenceWait: "committed-conversation-document-response-held", busyBoundary: "source-tool-in-flight-and-public-deferred-wake", workerReference: "rsvp-code-in-saved-note", judge: "completion-quality-v14-observed-rendered-result-access", judgeMaxDollarsPerRequest: 0.5, instructions: "production", correlation: "authoritative-task-facts-required-in-reply-run", restartBoundary: "done-and-source-provider-at-reference-gate", idleBoundaryTimeoutMs: 180_000, workerBriefTimeoutMs: 240_000, workerBriefWorkspace: "managed-project", workerBriefEvidence: "released-start-time", grading: "post-completion-reply-and-result-access", semanticReview: "required-separately", chatBoundary: "worker-gated-until-source-idle", observationWindowMs: 120_000, scheduling: "explicit-only" },
+
   },
   ...(process.env.PAPERCLIP_RUNNER_E2E_CONNECTION_REVIEWS === "1" ? [connectionReviewSuite] : []),
   {

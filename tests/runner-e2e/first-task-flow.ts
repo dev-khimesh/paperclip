@@ -1,3 +1,4 @@
+import { firstTaskUserRequest } from "./first-task-transcript.js";
 import { isBlockedUnstartedWake, isTerminalUnstartedWake } from "./non-execution-wake.js";
 import { firstTaskRejectionReplyRecorded, isFirstTaskRejectionCancellation } from "./first-task-rejection.js";
 import { answerableRuntimeRunIds } from "./runtime-question-readiness.js";
@@ -601,7 +602,7 @@ export async function runFirstTaskFlow(input: {
       const children = (await api.get<Row[]>(tasksPath)).filter(t => t.parentId === issue.id);
       expect(children).toHaveLength(1);
       const completion = await observeCompletionUpdate({ ...input, sourceId: issue.id, workerId: children[0]!.id,
-        marker: scenario.marker, allRuns });
+        marker: scenario.marker, fixtureRequest: firstTaskUserRequest(e), allRuns });
       e.runtimeSettings!.completionRenderedLinks = completion.renderedLinks ?? [];
       await snapshot("finished");
     }
