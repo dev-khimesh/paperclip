@@ -9,8 +9,10 @@ import { cn } from "../lib/utils";
 import { applyIssueFilters, type IssueFilterState, type IssueFilterWorkspaceContext } from "../lib/issue-filters";
 import { resolveInboxIssueBlockerAttention } from "../lib/inbox-live-descendants";
 import {
+  blockedReasonVariant,
   blockedRowActionLabel,
   blockedRowMatchesSearch,
+  blockedVariantLabel,
   buildBlockedInboxRows,
   formatStoppedAge,
   groupBlockedInboxRows,
@@ -90,8 +92,21 @@ export function BlockedInboxView({
 
   const allRows = useMemo(() => buildBlockedInboxRows(issues), [issues]);
   const filteredRows = useMemo(
-    () => allRows.filter((row) => blockedRowMatchesSearch(row, searchQuery)),
-    [allRows, searchQuery],
+    () =>
+      allRows.filter((row) =>
+        blockedRowMatchesSearch(row, searchQuery, {
+          // The group header is what puts the variant label on screen. With
+          // grouping set to "None" it is not rendered, so indexing it would let
+          // a search match "Needs attention" on a row that reads "Parked
+          // blocker". Same lie, other door.
+          groupLabel:
+            groupBy === "none" ? null : blockedVariantLabel(blockedReasonVariant(row.attention.reason)),
+          // Index the owner name the row actually draws, not the raw
+          // `attention.owner.label`, which is null on the finding-driven path.
+          ownerLabel: resolveOwnerName(row, agentNameById, userLabelById).label,
+        }),
+      ),
+    [allRows, agentNameById, groupBy, searchQuery, userLabelById],
   );
   const issueFilteredRows = useMemo(() => {
     const visibleIssueIds = new Set(

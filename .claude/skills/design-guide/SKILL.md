@@ -132,28 +132,33 @@ A blocked-inbox row answers three questions: which task, why it stopped, what to
 
 **Rule 1 — the chip prints the reason, the variant drives the styling.** `BlockedReasonChip` renders `blockedReasonLabel(reason)`, not `blockedVariantLabel(variant)`. The variant still selects colour, icon and `data-variant`, and still names the group the row is bucketed under. Printing the group label on the row made it redundant with its own group header *and* collapsed the server's 11 reasons into 6 indistinguishable strings — `needs_attention` covers Unassigned blocker, Parked blocker, Cancelled blocker and Review without action path alike.
 
-**Rule 2 — the action obeys a documented suppression rule.** `blockedRowActionLabel()` returns `null` when the action label is one of the liveness walk's fixed fallbacks, so nothing renders. Suppression is keyed on the **label**, never on the reason.
+**Rule 2 — the action obeys a documented suppression rule.** `blockedRowActionLabel()` returns `null` when the action carries no target, so nothing renders. The rule is "does this action name something?", not "is this a string I recognise?" — it keys on the **label** only to recognise the fallback, never on the reason.
 
-Live census, 2026-09-28, `GET /api/companies/{id}/issues?status=blocked&includeBlockedInboxAttention=true` — 76 rows, 67 with attention (re-measured twice; the board drains between runs, the shape does not change):
+Live census, 2026-09-28T19:26Z, `GET /api/companies/{id}/issues?status=blocked&includeBlockedInboxAttention=true&includeBlockedBy=true&limit=500` — 74 blocked rows, 60 carrying an action:
 
-| action label | rows | `leafIssue` | rendered |
-|---|---|---|---|
-| `Inspect blocker chain` | 58 of 67 (87%) | `null` on all 58, one byte-identical detail string | no — suppressed |
-| `Answer confirmation` | 6 | varies | yes |
-| `Choose disposition` | 2 | varies | yes |
-| `Resume parked blocker` | 1 | varies | yes |
+| action label | rows | `leafIssue` null | detail strings | rendered |
+|---|---|---|---|---|
+| `Inspect blocker chain` | 51 of 60 (85%) | 51/51 | 1 | no — suppressed |
+| `Answer confirmation` | 5 | 5/5 | 1 | yes |
+| `Choose disposition` | 2 | 2/2 | 1 | yes |
+| `Assign blocker` | 1 | 0/1 | 1 | yes |
+| `Resume parked blocker` | 1 | 0/1 | 1 | yes |
 
-`Inspect blocker chain` is the `blocked_chain_stalled` fallback branch of `server/src/services/recovery/issue-graph-liveness.ts`: it fires when no leaf produced a specific finding. It is dropped for two independent reasons — it names no target, and the rows already sit under a group header reading "Blocked chain stalled", so rendering it adds ~58 lines of noise and zero information.
+**Read the two degenerate columns, not the row counts.** The totals drift — the same board read 76 attended rows on one pass, 67 on the next, 60 on the last. The degeneracy does not: on all 51 stalled rows simultaneously, `leafIssue` is null, `recoveryIssue` is null, `owner.type` is `"unknown"`, and the detail string is one byte-identical string. Those are properties of the server branch, so they hold at any queue depth. `Assign blocker` → K-20119 and `Resume parked blocker` → K-20035 name real leaves, which is why they render and the fallback does not.
 
-**The number that re-opens it.** Suppression lifts per-row, the moment any of these is true:
+`Inspect blocker chain` is the `blocked_chain_stalled` fallback branch of the attention build (`server/src/services/issues.ts`, ~L6391): it fires when no leaf produced a specific finding. It is dropped for two independent reasons — it names no target, and the rows already sit under a group header reading "Blocked chain stalled", so rendering it adds ~51 lines of noise and zero information.
 
-1. `leafIssue` is non-null on a `blocked_chain_stalled` row (0 of 58 today), or
-2. the detail string stops being identical across stalled rows, or
-3. the label changes to name a target — e.g. `Unblock K-20015 by removing done blocker K-20016`.
+**The number that re-opens it.** These three are **implemented**, not merely described. A row is suppressed only while all three hold, so the first to become true renders the action with no code change:
 
-Because the rule is a label allowlist, all three lift it with no code change. A rule written as "hide the action when reason is `blocked_chain_stalled`" would have silently swallowed all three.
+1. the label stops being a known fallback — e.g. it becomes `Unblock K-20015 by removing done blocker K-20016`;
+2. `leafIssue` becomes non-null on a stalled row (0 of 51 today) — the row now names a target;
+3. the detail stops being the canonical stall string (1 distinct string today), so the row carries something the label alone does not.
 
-**Search parity.** `blockedRowSearchTokens()` indexes exactly what the row displays: title, identifier, owner, the specific reason, the variant shown in the group header, and the displayed action. `action.detail` is not indexed, and a suppressed action is not findable either. `leafIssue`/`recoveryIssue` refs are also **not** indexed: no render path draws them — the row has no blocker-chain or linked-blocker content, and the server's `leafIssue` is the last issue in `finding.dependencyPath`, which is a *different* issue from the row. Re-add them only in the same change that renders them. Never let the search box index text the row does not show — a filter that matches on hidden strings is a lie about the result.
+A rule written as "hide the action when the reason is `blocked_chain_stalled`" would have silently swallowed all three. So would a label-only allowlist that ignored conditions 2 and 3 — which is why the function tests all three, and why the guide and the function must be changed together.
+
+**Search parity.** `blockedRowSearchTokens()` indexes exactly what the row displays: title, identifier, the specific reason, the displayed action, and **two conditional tokens** — the variant group label only when the group header is actually rendered (with grouping set to "None" there is no header, so indexing it would match a row that reads only "Parked blocker"), and the owner name **as the row resolves it** (the server sets `owner.label: null` on the finding-driven path while the row still shows the assignee name from `owner.agentId`, so indexing the raw field alone made a displayed name unfindable).
+
+`action.detail` is not indexed, and a suppressed action is not findable either. `leafIssue`/`recoveryIssue` refs are also **not** indexed: no render path draws them — the row has no blocker-chain or linked-blocker content, and the server's `leafIssue` is the last issue in `finding.dependencyPath`, which is a *different* issue from the row. Re-add them only in the same change that renders them. Never let the search box index text the row does not show — a filter that matches on hidden strings is a lie about the result.
 
 Showcase: `ui/src/pages/DesignGuide.tsx` → "Blocked Inbox reason and action (K-20108)". Tests: `ui/src/lib/blockedInbox.test.ts`, `ui/src/components/BlockedReasonChip.test.tsx`, `ui/src/components/BlockedInboxView.test.tsx`.
 

@@ -452,6 +452,88 @@ describe("BlockedInboxView", () => {
     act(() => root.unmount());
   });
 
+  it("does not match the group label when grouping is off, and does when it is on", async () => {
+    // Parity, at the only place it is conditional. The variant label reaches
+    // the screen through the group header, so with grouping set to "None" there
+    // is no header and nothing draws it. Indexing it anyway let a search for
+    // "Needs attention" return a row that reads only "Parked blocker" -- the
+    // same findable-but-invisible defect the parity contract exists to stop.
+    mockIssuesApi.list.mockResolvedValue([
+      makeIssue(
+        "issue-group-label",
+        "PAP-60",
+        "Parked chain",
+        attention({
+          reason: "blocked_by_assigned_backlog_issue",
+          action: { label: "Resume parked blocker", detail: null },
+        }),
+      ),
+    ]);
+
+    const ungrouped = renderWithClient(
+      <BlockedInboxView {...blockedViewProps} groupBy="none" searchQuery="Needs attention" />,
+      container,
+    );
+    await waitFor(
+      () => container.querySelector('[data-testid="blocked-inbox-no-search-results"]') !== null,
+    );
+    // The row is on the wire and its group label is "Needs attention"...
+    expect(mockIssuesApi.list.mock.results.length).toBeGreaterThan(0);
+    // ...but no header is drawn, so the label must not match.
+    expect(container.querySelector('[data-testid="blocked-inbox"]')).toBeNull();
+    act(() => ungrouped.root.unmount());
+    container.remove();
+
+    const fresh = document.createElement("div");
+    document.body.appendChild(fresh);
+    const grouped = renderWithClient(
+      <BlockedInboxView {...blockedViewProps} groupBy="blocker_type" searchQuery="Needs attention" />,
+      fresh,
+    );
+    await waitFor(() => fresh.querySelectorAll("a").length > 0);
+    expect(fresh.textContent).toContain("Parked chain");
+    expect(fresh.textContent).toContain("Needs attention");
+    act(() => grouped.root.unmount());
+    fresh.remove();
+  });
+
+  it("finds a row by the owner name it displays, not the raw owner field", async () => {
+    // The inverse direction of the same contract: the server sets
+    // `owner.label: null` on the finding-driven path, and the row still draws
+    // the assignee name resolved from `owner.agentId`. A displayed name that
+    // the filter cannot reach is a search box that lies by omission.
+    mockIssuesApi.list.mockResolvedValue([
+      makeIssue(
+        "issue-owner",
+        "PAP-61",
+        "Waiting on a review gate",
+        attention({
+          reason: "in_review_without_action_path",
+          owner: { type: "agent", agentId: "agent-77", userId: null, label: null },
+          action: { label: "Choose review path", detail: null },
+        }),
+      ),
+    ]);
+
+    const { root } = renderWithClient(
+      <BlockedInboxView
+        {...blockedViewProps}
+        agentNameById={new Map([["agent-77", "Priya"]])}
+        searchQuery="Priya"
+      />,
+      container,
+    );
+    await waitFor(() => container.querySelectorAll("a").length > 0);
+
+    expect(container.textContent).toContain("Waiting on a review gate");
+    // The name is on the row and the filter reaches it.
+    expect(container.querySelector('[data-testid="blocked-row-owner-mobile"]')?.textContent).toBe(
+      "Priya",
+    );
+
+    act(() => root.unmount());
+  });
+
   it("keeps a stalled row findable by the specific reason its chip prints", async () => {
     // The other half of the same contract: suppression must not make a row
     // unfindable. "Parked blocker" is the exact case from the report -- it used
