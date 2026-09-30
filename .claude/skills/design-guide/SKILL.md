@@ -290,7 +290,7 @@ This is the living showcase of every component and pattern in the app. It is the
 
 ### Rules
 
-1. **When you add a new reusable component, you MUST add it to the design guide page.** Show all variants, sizes, and states.
+1. **When you add a new reusable component, you MUST add it to the design guide page.** Show all variants, sizes, and states. **If it is a shadcn primitive, you MUST also add its kebab-case name to the `Component Coverage` roster array in this file** — that roster is hardcoded and nothing derives it from disk, so a primitive absent from it is invisible to every reader of `/design-guide` (this is how `toggle-switch` shipped undocumented). See sec. 11.1; verify with `python3 scripts/census-design-guide-inventory.py`.
 2. **When you modify an existing component's API, update its design guide section.**
 3. **When you add a new composition pattern, add a section demonstrating it.**
 4. Follow the existing structure: `<Section title="...">` wrapper with `<SubSection>` for grouping.
@@ -318,7 +318,43 @@ This is the living showcase of every component and pattern in the app. It is the
 
 **See [references/component-index.md](references/component-index.md) for the full component inventory.**
 
-When you create a new reusable component:
+### 11.1 There are THREE inventories, not two
+
+Adding a reusable component means updating **three** hand-maintained lists. Sections 10 and 11
+used to name two of them, which is how `toggle-switch` — 25 importing files, the most-used
+primitive after `label` — ended up in **neither** documented list while `/design-guide` rendered
+a badge claiming a coverage it did not have.
+
+| | Artifact | What it is | Named by |
+|---|---|---|---|
+| A | `ui/src/components/**` | what exists on disk | — |
+| B | `.claude/skills/design-guide/references/component-index.md` | the documented index | sec. 11 |
+| C | the `Component Coverage` roster in `ui/src/pages/DesignGuide.tsx` | the badges `/design-guide` renders | **previously unnamed** |
+
+Checklist when you add a reusable component:
+
+1. Add it to `references/component-index.md`.
+2. Add a `<Section>` to `ui/src/pages/DesignGuide.tsx` showing its variants, sizes, and states.
+3. **If it is a shadcn primitive** (`ui/src/components/ui/`), also add its kebab-case name to the
+   `Component Coverage` roster array on that page. This roster is the only thing that makes the
+   page's coverage claim true, and it is a hardcoded string array — nothing derives it from disk.
+
+```bash
+python3 scripts/census-design-guide-inventory.py   # exits 1 when the three disagree
+```
+
+The census is the only reason these three lists cannot silently diverge again. Run it before you
+open a PR that adds or removes a component.
+
+**Scope, so the census does not produce false positives.** A component belongs in B and C when
+it is meant to be imported by more than one place. A one-off layout for a single page does not
+(section 6). The census therefore treats all five disagreement directions as violations for
+primitives, but only two for app components — the page's app-component roster is a curated
+showcase, not a coverage claim, and a page-local module is not a missing index entry. Those
+counts are still printed, labelled *out of scope, not drift*.
+
+### 11.2 Adding a new reusable component
+
 1. Add it to the component index reference file
 2. Add it to the /design-guide page
 3. Follow existing naming and file conventions
@@ -345,7 +381,7 @@ All components use `cn()` from `@/lib/utils` for className merging. All componen
 - Creating ad-hoc typography styles instead of using the established scale
 - Hardcoding status colors instead of using StatusBadge/StatusIcon
 - Building one-off styled elements when a reusable component exists
-- Adding components without updating the design guide page
+- Adding components without updating the design guide page — and, for a shadcn primitive, without adding its name to the `Component Coverage` roster. Those are two of three inventories; the third is the index file. See sec. 11.1.
 - Using `shadow-md` or heavier — keep shadows minimal (xs, sm only)
 - Using `rounded-2xl` or larger — max is `rounded-xl` (except `rounded-full` for pills)
 - Forgetting dark mode — always use semantic tokens, never hardcode light/dark values

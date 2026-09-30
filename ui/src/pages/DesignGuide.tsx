@@ -540,6 +540,7 @@ export function DesignGuide() {
                 "avatar", "badge", "breadcrumb", "button", "card", "checkbox", "collapsible",
                 "command", "dialog", "dropdown-menu", "input", "label", "popover", "resizable-panels",
                 "scroll-area", "select", "separator", "sheet", "skeleton", "tabs", "textarea", "tooltip",
+                "alert-dialog", "attachment", "radio-card", "toggle-switch",
               ].map((name) => (
                 <Badge key={name} variant="outline" className="font-mono text-(length:--text-nano)">
                   {name}
