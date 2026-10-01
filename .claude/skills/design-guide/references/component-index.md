@@ -64,11 +64,11 @@ These are shadcn/ui base components. Do not modify directly — extend via compo
 | Collapsible | `collapsible.tsx` | CollapsibleTrigger, CollapsibleContent | Expand/collapse sections. |
 | Skeleton | `skeleton.tsx` | className for sizing | Loading placeholder with shimmer. |
 | Sheet | `sheet.tsx` | SheetTrigger, SheetContent, SheetHeader, etc. | Side panel overlay. |
-| AlertDialog | `alert-dialog.tsx` | AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogAction, AlertDialogCancel | Destructive/irreversible confirmation. Distinct from Dialog so a confirmation cannot be built by accident. |
+| AlertDialog | `alert-dialog.tsx` | AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogAction, AlertDialogCancel | Destructive/irreversible confirmation. Kept distinct from Dialog so a destructive action cannot be confirmed with an ordinary dismissible panel. |
 | Attachment | `attachment.tsx` | Attachment, AttachmentIcon | File chip used in task chat bubbles and composers. |
 | RadioCard | `radio-card.tsx` | Card-shaped single-select | Single-select that reads as a card, used in connection setup flows. |
 | ResizablePanels | `resizable-panels.tsx` | Panel, PanelGroup, PanelResizeHandle | Resizable split layout (e.g. SkillStudio). |
-| ToggleSwitch | `toggle-switch.tsx` | `checked`, `onCheckedChange` | Pill switch. The most widely used primitive after `label` (25 importing files) -- extend it via composition rather than hand-rolling a switch. |
+| ToggleSwitch | `toggle-switch.tsx` | `checked`, `onCheckedChange` | Pill switch. 24 importing files -- the most-used of the five primitives this table had missed, and 14th of 26 overall -- so extend it via composition rather than hand-rolling a switch. |
 
 ---
 
@@ -215,7 +215,7 @@ Use in property rows, comment headers, assignee displays, and anywhere a user/ag
 ### InlineBanner
 
 **File:** `InlineBanner.tsx`
-**Props:** `tone` (`info` | `warning` | `danger`), `title?`, `icon?` (override, or `false` to omit), `actions?`, `compact?`
+**Props:** `tone?` (`info` | `warning` | `danger`, default `info`), `title?`, `icon?` (override, or `false` to omit), `actions?`, `compact?`
 **Usage:** In-flow notice rendered inside a page or a dialog -- `compact` is for embedding in a modal. Prefer this over a Dialog for anything that does not need to block the user's next action.
 
 ### MarkdownEditor
