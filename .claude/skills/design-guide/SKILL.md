@@ -321,9 +321,16 @@ This is the living showcase of every component and pattern in the app. It is the
 ### 11.1 There are THREE inventories, not two
 
 Adding a reusable component means updating **three** hand-maintained lists. Sections 10 and 11
-used to name two of them, which is how `toggle-switch` — 25 importing files, the most-used
-primitive after `label` — ended up in **neither** documented list while `/design-guide` rendered
-a badge claiming a coverage it did not have.
+used to name two of them, which is how `toggle-switch` — 24 importing files, and the most-used
+of the five primitives the index had missed entirely — ended up in **neither** documented list
+while `/design-guide` rendered a badge claiming a coverage it did not have.
+
+Measured by importing files, the full primitive ranking is `button` (311), `badge` (106),
+`input` (96), `tooltip` (93), `dialog` (74), `card` (64), `popover` (57), `dropdown-menu` (46),
+`textarea` (45), `tabs` (37), `select` (34), `label` (29), `skeleton` (27), `toggle-switch` (24).
+"Most used" is a claim about a subset, so state the subset — the earlier draft of this section
+claimed `toggle-switch` was "the most widely used primitive after `label`", which ranked 14th
+of 26 and was simply wrong.
 
 | | Artifact | What it is | Named by |
 |---|---|---|---|
