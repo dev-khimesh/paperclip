@@ -35,6 +35,16 @@ import re
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+class CensusInputError(RuntimeError):
+    """A source this census depends on no longer looks the way it expects.
+
+    Distinct from drift. Every caller reports it as "I could not read the
+    inputs", never as "the inventories agree" -- a census that reports clean
+    because it stopped looking is worse than no census at all.
+    """
+
 COMPONENTS = os.path.join(REPO, "ui/src/components")
 INDEX = os.path.join(REPO, ".claude/skills/design-guide/references/component-index.md")
 PAGE = os.path.join(REPO, "ui/src/pages/DesignGuide.tsx")
@@ -81,6 +91,10 @@ def exported_symbols(directory):
 
 
 def section(text, header):
+    if header not in text:
+        raise CensusInputError(
+            f'component-index.md is missing the "{header}" heading, so the '
+            'documented inventory cannot be read.')
     return text.split(header)[1].split("\n## ")[0]
 
 
@@ -91,17 +105,33 @@ def roster_arrays(page_text):
     Badge cannot be mistaken for a component name.
     """
     if '<Section title="Component Coverage">' not in page_text:
-        return set(), set()
+        raise CensusInputError(
+            'DesignGuide.tsx has no <Section title="Component Coverage">. The '
+            'page was restructured, so this script no longer knows where the '
+            'roster lives -- fix the markers here rather than reading an empty '
+            'roster as "no drift".')
     block = page_text.split('<Section title="Component Coverage">')[1]
     block = block.split("</Section>")[0]
+    for marker in ('title="UI primitives"', 'title="App components"'):
+        if marker not in block:
+            raise CensusInputError(
+                f'The Component Coverage section is missing {marker}.')
     ui_part = block.split('title="UI primitives"')[1]
     app_part = block.split('title="App components"')[1]
 
-    def names(fragment):
+    def names(fragment, label):
         match = re.search(r"\{\s*\[(.*?)\]\s*\.map", fragment, re.S)
-        return set(re.findall(r'"([^"]+)"', match.group(1))) if match else set()
+        if not match:
+            raise CensusInputError(
+                f'The {label} roster no longer matches the expected '
+                '[...].map array shape, so its names cannot be read.')
+        found = set(re.findall(r'"([^"]+)"', match.group(1)))
+        if not found:
+            raise CensusInputError(f'The {label} roster parsed as empty.')
+        return found
 
-    return names(ui_part.split('title="App components"')[0]), names(app_part)
+    return (names(ui_part.split('title="App components"')[0], "UI primitives"),
+            names(app_part, "App components"))
 
 
 def index_inventory(index_text):
@@ -217,6 +247,11 @@ def main():
     idx_prim, idx_comp = index_inventory(index_text)
     roster_prim, roster_comp = roster_arrays(page_text)
 
+    if not idx_prim:
+        raise CensusInputError(
+            "component-index.md yielded no shadcn/ui primitive names; the "
+            "primitives table is probably empty or restructured.")
+
     report = {
         "primitives": compare(primitives, idx_prim, roster_prim,
                               "shadcn/ui primitives", symbols, PRIMITIVE_BINDING),
@@ -258,4 +293,11 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except CensusInputError as error:
+        # Exit 3, not 1: an unreadable input is not drift, and a caller that
+        # watches for a red exit must be able to tell "the guide disagrees with
+        # itself" from "this script needs updating for a page restructure".
+        print(f"CANNOT READ INPUTS: {error}", file=sys.stderr)
+        sys.exit(3)
