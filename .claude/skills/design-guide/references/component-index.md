@@ -19,7 +19,8 @@ This file is **one of three** inventories of the same set, and all three must ag
 `SKILL.md` sec.10 rule 1 and sec.11 tell an author to update **two** places. There are three.
 The roster (C) is the one the guide never names, and the one a reader of `/design-guide` sees.
 Run `python3 scripts/census-design-guide-inventory.py` to check all three agree; it exits 1 on
-drift and is the only reason these three lists cannot silently diverge again.
+drift. Nothing runs it automatically yet, so it only holds if you run it -- see
+SKILL.md sec. 11.1.
 
 ---
 
@@ -65,9 +66,9 @@ These are shadcn/ui base components. Do not modify directly — extend via compo
 | Skeleton | `skeleton.tsx` | className for sizing | Loading placeholder with shimmer. |
 | Sheet | `sheet.tsx` | SheetTrigger, SheetContent, SheetHeader, etc. | Side panel overlay. |
 | AlertDialog | `alert-dialog.tsx` | AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogAction, AlertDialogCancel | Destructive/irreversible confirmation. Kept distinct from Dialog so a destructive action cannot be confirmed with an ordinary dismissible panel. |
-| Attachment | `attachment.tsx` | Attachment, AttachmentIcon | File chip used in task chat bubbles and composers. |
-| RadioCard | `radio-card.tsx` | Card-shaped single-select | Single-select that reads as a card, used in connection setup flows. |
-| ResizablePanels | `resizable-panels.tsx` | Panel, PanelGroup, PanelResizeHandle | Resizable split layout (e.g. SkillStudio). |
+| Attachment | `attachment.tsx` | Attachment, AttachmentGroup, AttachmentMedia, AttachmentContent, AttachmentTitle, AttachmentDescription, AttachmentActions, AttachmentAction, AttachmentTrigger | File chip used in task chat bubbles and composers. `AttachmentMedia` is the icon/avatar slot; there is no `AttachmentIcon` export. |
+| RadioCard | `radio-card.tsx` | RadioCardGroup, RadioCard, `RadioCardOption` (type) | Single-select that reads as a card. Every call site uses `RadioCardGroup`; `RadioCard` is the single-option primitive underneath it. |
+| ResizablePanels | `resizable-panels.tsx` | ResizablePanelGroup, ResizablePanel, ResizableHandle | Resizable split layout (e.g. SkillStudio). Local reimplementation -- the exports are `Resizable*`-prefixed, not `Panel*`. |
 | ToggleSwitch | `toggle-switch.tsx` | `checked`, `onCheckedChange` | Pill switch. 24 importing files -- the most-used of the five primitives this table had missed, and 14th of 26 overall -- so extend it via composition rather than hand-rolling a switch. |
 
 ---

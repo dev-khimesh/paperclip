@@ -46,11 +46,14 @@ import {
   LayoutDashboard,
   ListTodo,
   Mail,
+  Paperclip as PaperclipIcon,
+  FileText as FileTextIcon,
   Plus,
   Search,
   Settings,
   Target,
   Trash2,
+  TriangleAlert as TriangleAlertIcon,
   Upload,
   User,
   Zap,
@@ -63,6 +66,26 @@ import { BuiltInLifecycleChip } from "@/components/BuiltInAgentBadges";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
+import { RadioCardGroup } from "@/components/ui/radio-card";
+import {
+  Attachment,
+  AttachmentContent,
+  AttachmentDescription,
+  AttachmentMedia,
+  AttachmentTitle,
+} from "@/components/ui/attachment";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -377,6 +400,53 @@ const DESIGN_GUIDE_SECRETS: CompanySecret[] = [
     updatedAt: new Date("2026-03-01T10:00:00.000Z"),
   },
 ];
+
+function ToggleSwitchShowcase() {
+  const [enabled, setEnabled] = useState(true);
+  const [lg, setLg] = useState(false);
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-3">
+        <ToggleSwitch id="dg-toggle" checked={enabled} onCheckedChange={setEnabled} />
+        <Label htmlFor="dg-toggle">Off by default</Label>
+      </div>
+      <div className="flex items-center gap-3">
+        <ToggleSwitch id="dg-toggle-lg" checked={lg} onCheckedChange={setLg} size="lg" />
+        <Label htmlFor="dg-toggle-lg">Large (size=&quot;lg&quot;)</Label>
+      </div>
+      <div className="flex items-center gap-3">
+        <ToggleSwitch id="dg-toggle-disabled" checked={false} disabled onCheckedChange={() => {}} />
+        <Label htmlFor="dg-toggle-disabled">Disabled</Label>
+      </div>
+    </div>
+  );
+}
+
+function RadioCardShowcase() {
+  const [value, setValue] = useState("sandbox");
+  return (
+    <RadioCardGroup
+      ariaLabel="Execution environment"
+      value={value}
+      onValueChange={setValue}
+      options={[
+        { value: "local", title: "Local", description: "Runs on this machine." },
+        {
+          value: "sandbox",
+          title: "Sandbox",
+          description: "Isolated microVM. Recommended.",
+          icon: <Hexagon />,
+        },
+        {
+          value: "daytona",
+          title: "Daytona",
+          description: "Unavailable on this plan.",
+          disabled: true,
+        },
+      ]}
+    />
+  );
+}
 
 function EnvironmentVariablesEditorShowcase() {
   const [env, setEnv] = useState<Record<string, EnvBinding>>({
@@ -1600,6 +1670,92 @@ export function DesignGuide() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  ALERT DIALOG                                                 */}
+      {/* ============================================================ */}
+      <Section title="Alert Dialog">
+        <p className="text-sm text-muted-foreground">
+          For destructive or irreversible confirmation. Unlike Dialog it cannot be dismissed by
+          Escape, outside click, or the close button -- the caller must choose an action.
+        </p>
+        <AlertDialog>
+          <AlertDialogTrigger asChild>
+            <Button variant="destructive">Delete run</Button>
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete this run?</AlertDialogTitle>
+              <AlertDialogDescription>
+                The run and its transcript are removed. This cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Keep run</AlertDialogCancel>
+              <AlertDialogAction>Delete</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  TOGGLE SWITCH                                                */}
+      {/* ============================================================ */}
+      <Section title="Toggle Switch">
+        <p className="text-sm text-muted-foreground">
+          An on/off control for a setting that applies immediately. Deliberately not a checkbox:
+          if the change needs a Save button, use Checkbox in a form instead.
+        </p>
+        <ToggleSwitchShowcase />
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  RADIO CARD                                                   */}
+      {/* ============================================================ */}
+      <Section title="Radio Card">
+        <p className="text-sm text-muted-foreground">
+          Single-select when the options need a title and a line of explanation each. Arrow keys
+          move between options and skip disabled ones.
+        </p>
+        <RadioCardShowcase />
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  ATTACHMENT                                                   */}
+      {/* ============================================================ */}
+      <Section title="Attachment">
+        <p className="text-sm text-muted-foreground">
+          A file chip. The state drives the treatment, so upload progress and failure read without
+          a separate status element.
+        </p>
+        <div className="grid gap-4 md:grid-cols-2">
+          {(["idle", "uploading", "error", "done"] as const).map((state) => (
+            <Attachment key={state} state={state}>
+              <AttachmentMedia>
+                {state === "error" ? (
+                  <TriangleAlertIcon />
+                ) : state === "done" ? (
+                  <FileTextIcon />
+                ) : (
+                  <PaperclipIcon />
+                )}
+              </AttachmentMedia>
+              <AttachmentContent>
+                <AttachmentTitle>report.pdf</AttachmentTitle>
+                <AttachmentDescription>
+                  {state === "idle"
+                    ? "Queued"
+                    : state === "uploading"
+                      ? "Uploading… 62%"
+                      : state === "error"
+                        ? "Upload failed"
+                        : "1.2 MB"}
+                </AttachmentDescription>
+              </AttachmentContent>
+            </Attachment>
+          ))}
+        </div>
       </Section>
 
       {/* ============================================================ */}

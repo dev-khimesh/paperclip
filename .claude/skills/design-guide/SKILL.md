@@ -345,13 +345,24 @@ Checklist when you add a reusable component:
 3. **If it is a shadcn primitive** (`ui/src/components/ui/`), also add its kebab-case name to the
    `Component Coverage` roster array on that page. This roster is the only thing that makes the
    page's coverage claim true, and it is a hardcoded string array — nothing derives it from disk.
+4. **The `<Section>` from step 2 has to instantiate the component, not just name it.** A heading
+   plus a paragraph is not a demonstration. The census compares names across the three
+   inventories and cannot read the page body, so a bare `<Section title="Toggle Switch">` with
+   nothing under it satisfies every check while leaving the coverage claim false. This is exactly
+   how `alert-dialog`, `attachment`, `radio-card`, and `toggle-switch` came to sit in the roster
+   with no examples. `DesignGuide.component-coverage.test.tsx` guards the four that are easiest to
+   get wrong; add your component to it when you add its section.
 
 ```bash
 python3 scripts/census-design-guide-inventory.py   # exits 1 when the three disagree
 ```
 
-The census is the only reason these three lists cannot silently diverge again. Run it before you
-open a PR that adds or removes a component.
+Run the census before you open a PR that adds or removes a component.
+
+**Nothing runs it automatically yet.** No CI workflow, package script, or hook invokes it, so a
+change that skips this file still passes every automated check. Until that is wired up, the census
+is a check a human or agent has to remember to run -- treat "the census is green" as unverified
+unless you ran it in this session. Wiring it into CI is K-20207.
 
 **Scope, so the census does not produce false positives.** A component belongs in B and C when
 it is meant to be imported by more than one place. A one-off layout for a single page does not

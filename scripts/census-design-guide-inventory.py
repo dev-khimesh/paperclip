@@ -197,6 +197,77 @@ COMPOSITE_BINDING = (
 )
 
 
+def index_export_claims(index_text):
+    """Export names each primitive row asserts, for the cells that assert a list.
+
+    The shadcn table is the vocabulary list a developer learns from, and a name
+    in it gets copied into an import. Three rows in this file's first draft
+    promised identifiers the modules never exported (`AttachmentIcon`,
+    `Panel`/`PanelGroup`/`PanelResizeHandle`), so following the guidance produced
+    code that does not compile. The three-way name census cannot see this: it
+    compares component names, not the export names printed beside them, which is
+    why the errors survived a green run.
+
+    Only cells that are *structurally* a list of identifiers are read. "Key
+    Props" is a mixed column -- some rows list exports (`DialogTrigger,
+    DialogContent`), others describe props in prose (`className for sizing`) --
+    so the test is whether every comma-separated segment is a PascalCase
+    identifier. Rows that fail it are skipped rather than guessed at, because a
+    false accusation is worse than an unchecked row: this file has been wrong
+    about its own scope before.
+    """
+    claims = {}
+    for line in section(index_text, "## shadcn/ui Primitives").splitlines():
+        cells = [cell.strip() for cell in line.split("|")]
+        if len(cells) < 4 or not cells[1] or set(cells[1]) <= set("- "):
+            continue
+        module = re.fullmatch(r"`([a-z0-9\-]+)\.tsx`", cells[2])
+        if not module:
+            continue
+        cell = cells[3].replace("`", "").strip()
+        if not cell or cell == "\u2014":
+            continue
+        segments = [part.strip() for part in cell.split(",")]
+        if not segments or not all(
+            re.fullmatch(r"[A-Z][A-Za-z0-9_]*", part) for part in segments):
+            continue
+        claims[module.group(1)] = set(segments)
+    return claims
+
+
+def export_names(module_path):
+    """PascalCase identifiers a module exports, or None when unreadable."""
+    try:
+        with open(module_path, errors="ignore") as handle:
+            source = handle.read()
+    except OSError as error:
+        raise CensusInputError(
+            f"cannot read {module_path}: {error}. The export check compares "
+            "documented names against module source.") from error
+    names = set(re.findall(
+        r"export\s+(?:const|function|class|interface|type)\s+([A-Z][A-Za-z0-9_]*)",
+        source))
+    for group in re.findall(r"export\s*\{([^}]*)\}", source):
+        for part in group.split(","):
+            if part.strip():
+                names.add(part.strip().split(" as ")[-1].strip())
+    return names
+
+
+def unbacked_export_claims(index_text, primitives_dir):
+    """Documented export names the module does not export, per module."""
+    unsupported = {}
+    for module, claimed in index_export_claims(index_text).items():
+        path = os.path.join(primitives_dir, f"{module}.tsx")
+        if not os.path.exists(path):
+            continue
+        actual = export_names(path)
+        bogus = sorted(claimed - actual)
+        if bogus:
+            unsupported[module] = bogus
+    return unsupported
+
+
 def compare(disk, indexed, roster, label, known, binding):
     """One surface's three-way comparison, with only real disagreements kept."""
     present = lambda n: n in known or n in disk
@@ -229,6 +300,17 @@ def compare(disk, indexed, roster, label, known, binding):
     }
 
 
+def read_input(path):
+    try:
+        with open(path, errors="ignore") as handle:
+            return handle.read()
+    except OSError as error:
+        raise CensusInputError(
+            f"cannot read {path}: {error}. The census compares named inputs; if "
+            "one of them moved or was deleted, this script needs its path "
+            "updated rather than reporting drift.") from error
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--warn", action="store_true",
@@ -236,8 +318,8 @@ def main():
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     args = parser.parse_args()
 
-    index_text = open(INDEX).read()
-    page_text = open(PAGE).read()
+    index_text = read_input(INDEX)
+    page_text = read_input(PAGE)
 
     modules = walk_modules(COMPONENTS)
     symbols = exported_symbols(COMPONENTS)
@@ -252,12 +334,17 @@ def main():
             "component-index.md yielded no shadcn/ui primitive names; the "
             "primitives table is probably empty or restructured.")
 
+    unbacked = unbacked_export_claims(index_text, os.path.join(COMPONENTS, "ui"))
+
     report = {
         "primitives": compare(primitives, idx_prim, roster_prim,
                               "shadcn/ui primitives", symbols, PRIMITIVE_BINDING),
         "composites": compare(composites, idx_comp, roster_comp,
                               "app components", symbols, COMPOSITE_BINDING),
     }
+    if unbacked:
+        report["primitives"]["export_names_not_exported"] = unbacked
+        report["primitives"]["drift"]["export_names_not_exported"] = sorted(unbacked)
     drifted = any(surface["drift"] for surface in report.values())
 
     if args.json:
@@ -269,23 +356,41 @@ def main():
             print(f"   on disk {counts['on_disk']:>4}   in index {counts['in_index']:>3}"
                   f"   on page roster {counts['on_page_roster']:>3}"
                   f"   agree in all three {counts['agree_in_all_three']:>3}")
-            for key in ("roster_names_with_no_such_component",
+            for key in ("export_names_not_exported",
+                        "roster_names_with_no_such_component",
                         "on_disk_missing_from_index",
                         "on_disk_missing_from_page_roster",
                         "on_page_roster_missing_from_index",
                         "in_index_missing_from_page_roster"):
-                items = surface[key]
+                items = surface.get(key) or []
                 if items:
-                    shown = ", ".join(items[:8]) + (" ..." if len(items) > 8 else "")
-                    tag = "" if key in surface["binding"] else "  (out of scope, not drift)"
+                    if isinstance(items, dict):
+                        shown = "; ".join(
+                            f"{module}: {', '.join(names)}"
+                            for module, names in sorted(items.items()))
+                    else:
+                        shown = ", ".join(items[:8]) + (" ..." if len(items) > 8 else "")
+                    # export_names_not_exported is deliberately absent from
+                    # `binding` (it only ever exists on the primitives surface),
+                    # but it is a real violation, not an out-of-scope count.
+                    if key == "export_names_not_exported" or key in surface["binding"]:
+                        tag = ""
+                    else:
+                        tag = "  (out of scope, not drift)"
                     print(f"   {key} ({len(items)}): {shown}{tag}")
         if drifted:
             print("\nDRIFT (only binding directions count; see PRIMITIVE_BINDING/"
                   "COMPOSITE_BINDING in this file)")
             for surface in report.values():
                 for key, items in surface["drift"].items():
-                    print(f"   {surface['surface']}: {key} ({len(items)}): "
-                          + ", ".join(items[:12]) + (" ..." if len(items) > 12 else ""))
+                    if isinstance(items, dict):
+                        detail = "; ".join(
+                            f"{module}: {', '.join(names)}"
+                            for module, names in sorted(items.items()))
+                        print(f"   {surface['surface']}: {key} ({len(items)}): {detail}")
+                    else:
+                        print(f"   {surface['surface']}: {key} ({len(items)}): "
+                              + ", ".join(items[:12]) + (" ..." if len(items) > 12 else ""))
         else:
             print("\nIN SYNC")
 
