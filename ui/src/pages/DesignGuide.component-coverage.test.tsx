@@ -130,6 +130,33 @@ describe("DesignGuide component coverage", () => {
     // size="lg" and disabled are the two states worth demonstrating; both are
     // only visible as attributes, so assert on them rather than on pixels.
     expect(toggleSection.querySelectorAll('[data-slot="toggle"][disabled]')).toHaveLength(1);
+    // Each row's <Label> describes the state that row is actually in. The first
+    // draft read "Off by default" above a switch initialised to true, so the page
+    // taught the wrong thing about the component it exists to document. Assert the
+    // rendered state and its label together instead of trusting the label.
+    // Both interactive rows mount checked so the "on" fill is visible without a
+    // click; the disabled row mounts unchecked. One of each state, plus a label
+    // that matches, is what a reader needs from this section.
+    expect(toggleSection.querySelectorAll('[data-slot="toggle"][aria-checked="true"]'))
+      .toHaveLength(2);
+    expect(toggleSection.querySelectorAll('[data-slot="toggle"][aria-checked="false"]'))
+      .toHaveLength(1);
+    // Each row's <Label> has to describe the state that row is actually in. The
+    // first draft read "Off by default" above a switch initialised to true, so the
+    // page taught the wrong thing about the component it exists to document. Read
+    // the rendered aria-checked back rather than trusting the label text.
+    for (const toggle of Array.from(toggleSection.querySelectorAll('[data-slot="toggle"]'))) {
+      const id = toggle.getAttribute("id")!;
+      const label = toggleSection.querySelector(`label[for="${id}"]`)!.textContent!;
+      const on = toggle.getAttribute("aria-checked") === "true";
+      if (on) {
+        expect(label, `label "${label}" is off but aria-checked is true`)
+          .toMatch(/^on\b/i);
+      } else {
+        expect(label, `label "${label}" is on but aria-checked is false`)
+          .toMatch(/^off\b/i);
+      }
+    }
 
     const radioSection = sectionFor(container, "Radio Card")!;
     expect(radioSection.querySelectorAll('[role="radio"]')).toHaveLength(3);

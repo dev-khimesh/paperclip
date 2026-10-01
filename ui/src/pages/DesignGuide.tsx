@@ -403,20 +403,20 @@ const DESIGN_GUIDE_SECRETS: CompanySecret[] = [
 
 function ToggleSwitchShowcase() {
   const [enabled, setEnabled] = useState(true);
-  const [lg, setLg] = useState(false);
+  const [lg, setLg] = useState(true);
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-3">
         <ToggleSwitch id="dg-toggle" checked={enabled} onCheckedChange={setEnabled} />
-        <Label htmlFor="dg-toggle">Off by default</Label>
+        <Label htmlFor="dg-toggle">On</Label>
       </div>
       <div className="flex items-center gap-3">
         <ToggleSwitch id="dg-toggle-lg" checked={lg} onCheckedChange={setLg} size="lg" />
-        <Label htmlFor="dg-toggle-lg">Large (size=&quot;lg&quot;)</Label>
+        <Label htmlFor="dg-toggle-lg">On, large (size=&quot;lg&quot;)</Label>
       </div>
       <div className="flex items-center gap-3">
         <ToggleSwitch id="dg-toggle-disabled" checked={false} disabled onCheckedChange={() => {}} />
-        <Label htmlFor="dg-toggle-disabled">Disabled</Label>
+        <Label htmlFor="dg-toggle-disabled">Off, disabled</Label>
       </div>
     </div>
   );
